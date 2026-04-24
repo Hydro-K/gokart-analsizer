@@ -1,5 +1,10 @@
 """
-Alltrax SR-72400 motor controller settings model.
+Alltrax SR controller settings model.
+
+Default values are set for EVGP 2025-26 compliance:
+  • max_current    ≤ 220 A  (EVGP hard limit)
+  • lo_voltage_cutoff ≥ 40.0 V  (16S LiFePO4 min — 16 × 2.5 V)
+  • hi_voltage_cutoff ≤ 58.4 V  (16S LiFePO4 max — 16 × 3.65 V)
 """
 
 from __future__ import annotations
@@ -10,12 +15,12 @@ from typing import List
 
 @dataclass
 class AlltraxSettings:
-    max_current: int = 300          # 0–400 A
+    max_current: int = 180          # EVGP limit: ≤ 220 A
     accel_rate: int = 64            # 1–255  (higher = faster ramp)
     decel_rate: int = 64            # 1–255  (plug/regen braking strength)
     speed_limit: int = 100          # 0–100 %
-    lo_voltage_cutoff: float = 30.0 # volts (LiPo pack low-cell protection)
-    hi_voltage_cutoff: float = 58.8 # volts (full-charge BMS limit)
+    lo_voltage_cutoff: float = 42.0 # V — 16S LiFePO4 safe minimum (16 × 2.5V = 40V)
+    hi_voltage_cutoff: float = 58.4 # V — 16S LiFePO4 max charge (16 × 3.65V = 58.4V)
     throttle_deadband: int = 10     # 0–255 (raw ADC counts)
     peak_amp_mode: bool = True      # True = allow peak amps above map limit
     regen_braking: bool = False     # True = regenerative braking enabled
