@@ -10,10 +10,13 @@ const NAV = [
   { to: '/karts',         label: 'Karts' },
   { to: '/tracks',        label: 'Tracks' },
   { to: '/simulation',    label: 'Simulation',   engineer: true },
+  { to: '/ml',            label: 'ML Analysis',  engineer: true },
+  { to: '/compare',       label: 'Compare',      engineer: true },
   { to: '/compliance',    label: 'Compliance' },
   { to: '/storage',       label: 'Storage',      engineer: true },
   { to: '/users',         label: 'Users',        admin: true },
   { to: '/settings',      label: 'Settings' },
+  { to: '/pi-guide',      label: 'Pi Setup' },
 ]
 
 export function Sidebar() {

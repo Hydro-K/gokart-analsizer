@@ -1,7 +1,6 @@
 """SQLite database connection and schema initialization for Strat-OS."""
 from __future__ import annotations
 import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
@@ -90,13 +89,20 @@ CREATE INDEX IF NOT EXISTS idx_laps_time    ON laps(lap_time_s);
 
 -- ── Lap telemetry ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS lap_telemetry (
-    id         INTEGER PRIMARY KEY,
-    lap_id     INTEGER NOT NULL UNIQUE REFERENCES laps(id) ON DELETE CASCADE,
-    time_json  TEXT    NOT NULL,
-    speed_json TEXT    NOT NULL,
-    lat_json   TEXT,
-    lon_json   TEXT,
-    phase_json TEXT
+    id              INTEGER PRIMARY KEY,
+    lap_id          INTEGER NOT NULL UNIQUE REFERENCES laps(id) ON DELETE CASCADE,
+    time_json       TEXT    NOT NULL,
+    speed_json      TEXT    NOT NULL,
+    lat_json        TEXT,
+    lon_json        TEXT,
+    phase_json      TEXT,
+    lateral_acc_json   TEXT,
+    inline_acc_json    TEXT,
+    yaw_rate_json      TEXT,
+    roll_rate_json     TEXT,
+    pitch_rate_json    TEXT,
+    vertical_acc_json  TEXT,
+    battery_v_json     TEXT
 );
 
 -- ── ML ────────────────────────────────────────────────────────────────────────
@@ -241,11 +247,27 @@ def init_db() -> None:
     cfg.ensure_dirs()
     conn = create_connection()
     conn.executescript(_DDL)
+    # Safe column additions for existing databases
+    _add_columns_if_missing(conn, "lap_telemetry", [
+        ("lateral_acc_json",  "TEXT"),
+        ("inline_acc_json",   "TEXT"),
+        ("yaw_rate_json",     "TEXT"),
+        ("roll_rate_json",    "TEXT"),
+        ("pitch_rate_json",   "TEXT"),
+        ("vertical_acc_json", "TEXT"),
+        ("battery_v_json",    "TEXT"),
+    ])
     conn.commit()
     conn.close()
 
 
-@contextmanager
+def _add_columns_if_missing(conn: sqlite3.Connection, table: str, cols: list[tuple[str, str]]) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for col_name, col_type in cols:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+
+
 def get_db() -> Generator[sqlite3.Connection, None, None]:
     conn = create_connection()
     try:

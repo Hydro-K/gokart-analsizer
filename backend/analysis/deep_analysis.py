@@ -213,12 +213,12 @@ def estimate_energy(
     P_motor = np.where(P > 0, P, 0.0)      # motoring power
     P_brake = np.where(P < 0, -P, 0.0)    # braking power (positive)
 
-    E_motor = float(np.trapz(P_motor, time)) / 3_600_000   # kWh
-    E_regen = float(np.trapz(P_brake, time)) / 3_600_000 * regen_efficiency
+    E_motor = float(np.trapezoid(P_motor, time)) / 3_600_000   # kWh
+    E_regen = float(np.trapezoid(P_brake, time)) / 3_600_000 * regen_efficiency
 
     net_kwh = E_motor - E_regen
     lap_time = float(time[-1] - time[0])
-    dist_km = float(np.trapz(speed, time)) / 1000.0
+    dist_km = float(np.trapezoid(speed, time)) / 1000.0
 
     avg_power_kw = net_kwh / (lap_time / 3600) if lap_time > 0 else 0.0
     peak_power_kw = float(np.max(P_motor)) / 1000.0

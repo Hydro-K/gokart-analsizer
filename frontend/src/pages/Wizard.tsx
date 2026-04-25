@@ -156,7 +156,7 @@ export default function Wizard() {
             <div className="text-5xl">✓</div>
             <h2 className="text-xl font-bold text-white">Strat-OS Ready</h2>
             <p className="text-gray-400 text-sm">Upload your first AiM CSV session to get started.</p>
-            <button onClick={() => nav('/', { replace: true })} className="w-full py-2 bg-accent text-bg font-bold rounded hover:opacity-90">
+            <button onClick={() => window.location.replace('/')} className="w-full py-2 bg-accent text-bg font-bold rounded hover:opacity-90">
               Go to Dashboard
             </button>
           </div>

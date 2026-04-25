@@ -19,7 +19,7 @@ export default function Drivers() {
     }).catch(() => {})
   }
 
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e: FormEvent) => {
     e.preventDefault()

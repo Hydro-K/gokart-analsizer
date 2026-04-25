@@ -8,8 +8,8 @@ def test_estimate_energy():
     t = np.linspace(0, 60, 601)
     s = np.ones(601) * 15.0  # constant 15 m/s
     energy = estimate_energy(t, s)
-    assert energy > 0
-    assert energy < 5.0  # sanity: < 5 kWh for 1 lap
+    assert energy.total_kwh > 0
+    assert energy.total_kwh < 5.0  # sanity: < 5 kWh for 1 lap
 
 
 def test_driver_smoothness_score():
@@ -26,9 +26,11 @@ def test_driver_smoothness_score():
 
 def test_sector_splits():
     from backend.analysis.deep_analysis import sector_splits
+    from backend.analysis.lap_analyzer import LapData
     t = np.linspace(0, 60, 601)
     s = 15.0 + 5 * np.sin(t * 0.1)
-    result = sector_splits(t, s, n_sectors=3)
+    lap = LapData(lap_number=1, start_idx=0, end_idx=600, lap_time=60.0, time=t, speed=s)
+    result = sector_splits(lap, n_sectors=3)
     assert len(result) == 3
     total_time = sum(r.time_s for r in result)
     assert abs(total_time - 60.0) < 1.0
@@ -36,7 +38,7 @@ def test_sector_splits():
 
 def test_theoretical_best_lap():
     from backend.analysis.deep_analysis import theoretical_best_lap
-    from backend.analysis.lap_analyzer import LapData
+    from backend.analysis.lap_analyzer import LapData, SessionAnalysis
 
     laps = []
     for i in range(5):
@@ -47,5 +49,6 @@ def test_theoretical_best_lap():
             lap_time=60.0 + i, time=t, speed=s,
         ))
 
-    best = theoretical_best_lap(laps)
-    assert best < laps[0].lap_time  # theoretical best < best lap
+    session = SessionAnalysis(laps=laps, best_lap_index=0)
+    best_time, _, _ = theoretical_best_lap(session)
+    assert best_time < laps[0].lap_time  # theoretical best < best lap

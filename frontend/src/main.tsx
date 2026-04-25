@@ -19,6 +19,9 @@ import Compliance from './pages/Compliance'
 import StorageDashboard from './pages/StorageDashboard'
 import Users from './pages/Users'
 import Settings from './pages/Settings'
+import ML from './pages/ML'
+import Compare from './pages/Compare'
+import PiGuide from './pages/PiGuide'
 import { api, SystemStatus } from './api'
 
 function AppRouter() {
@@ -62,6 +65,9 @@ function AppRouter() {
         <Route path="/tracks"        element={<Tracks />} />
         <Route path="/simulation"    element={<Simulation />} />
         <Route path="/compliance"    element={<Compliance />} />
+        <Route path="/ml"            element={<ML />} />
+        <Route path="/compare"       element={<Compare />} />
+        <Route path="/pi-guide"      element={<PiGuide />} />
         <Route path="/storage"       element={<StorageDashboard />} />
         <Route path="/users"         element={<Users />} />
         <Route path="/settings"      element={<Settings />} />

@@ -7,7 +7,7 @@ export default function Karts() {
   const [error, setError] = useState('')
 
   const load = () => api.get<Kart[]>('/karts').then(setKarts).catch(() => {})
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e: FormEvent) => {
     e.preventDefault(); setError('')

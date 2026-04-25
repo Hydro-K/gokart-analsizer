@@ -7,9 +7,9 @@ def test_storage_stats_returns_expected_keys(client, auth_headers):
     res = client.get("/api/storage/stats", headers=auth_headers)
     assert res.status_code == 200
     data = res.json()
-    assert "used_pct" in data
+    assert "sd_pct" in data
     assert "status" in data
-    assert "total_gb" in data
+    assert "sd_total_gb" in data
     assert data["status"] in ("ok", "warn", "critical", "emergency")
 
 

@@ -4,7 +4,7 @@ import pytest
 
 def test_register_first_admin(client):
     res = client.post("/api/auth/register", json={
-        "username": "admin1", "display_name": "Admin", "password": "pass123", "role": "admin"
+        "username": "testadmin", "display_name": "Test Admin", "password": "testpass123", "role": "admin"
     })
     assert res.status_code == 200
     data = res.json()
