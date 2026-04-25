@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import backend.config; import backend.database; print\\('config+db OK'\\)\")",
+      "Bash(python -c \"from backend.main import app; print\\('main.py imports OK'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
+      "Bash(where python *)",
+      "Bash(pip --version)",
+      "Bash(\"C:/Users/kbhin/AppData/Local/Python/bin/python.exe\" -c \"import sys; print\\(sys.executable, sys.version\\)\")",
+      "Bash(\"C:/Users/kbhin/AppData/Local/Python/bin/python.exe\" -m venv .venv)",
+      "Bash(.venv/Scripts/pip install *)"
+    ]
+  }
+}

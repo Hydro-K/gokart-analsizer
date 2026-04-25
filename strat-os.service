@@ -1,0 +1,15 @@
+[Unit]
+Description=Strat-OS EV Kart Race Engineering Platform
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/strat-os
+ExecStart=/home/pi/strat-os/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log
+Restart=always
+RestartSec=5
+Environment=STRATOS_PI_MODE=true
+Environment=STRATOS_DATA_DIR=/home/pi/strat-os/data
+
+[Install]
+WantedBy=multi-user.target
