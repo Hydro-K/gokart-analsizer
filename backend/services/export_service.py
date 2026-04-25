@@ -193,4 +193,4 @@ def _write_text_report(path: Path, data: dict, valid_laps: list) -> None:
             tm, ts = divmod(theo, 60)
             lines.append(f"THEORETICAL BEST: {int(tm)}:{ts:06.3f}  (gap: +{best_time - theo:.3f}s)")
     lines.append(sep)
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(lines), encoding="utf-8")

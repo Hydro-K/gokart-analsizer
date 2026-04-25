@@ -93,10 +93,15 @@ async def _dispatch(job_type: str, payload: dict) -> dict:
 
 def _handle_ingest(payload: dict) -> dict:
     from backend.database import create_connection
-    from backend.services.ingestion import ingest_csv
+    from backend.services.ingestion import ingest_csv, ingest_csv_files
     conn = create_connection()
     try:
-        result = ingest_csv(payload["session_id"], payload["file_path"], conn)
+        # Support both legacy single file_path and new multi-file file_paths
+        file_paths = payload.get("file_paths") or [payload["file_path"]]
+        if len(file_paths) == 1:
+            result = ingest_csv(payload["session_id"], file_paths[0], conn)
+        else:
+            result = ingest_csv_files(payload["session_id"], file_paths, conn)
         conn.commit()
         return result
     finally:

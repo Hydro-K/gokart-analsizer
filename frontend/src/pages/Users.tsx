@@ -10,7 +10,7 @@ export default function Users() {
   const currentUser = useAuthStore(s => s.user)
 
   const load = () => api.get<User[]>('/users').then(setUsers).catch(() => {})
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e: FormEvent) => {
     e.preventDefault(); setError('')

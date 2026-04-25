@@ -22,16 +22,16 @@ def test_update_rules(client, auth_headers):
 
 def test_simulation_220a_hard_cap(client, auth_headers):
     """Mode A simulation must cap current at 220A even if 250 requested."""
-    # Need a lap — create driver, kart, track, session first via ingestion
-    # This test just checks the Pydantic schema rejects > 220A
-    from backend.schemas import SimModeARequest
-    req = SimModeARequest(lap_id=1, max_current=250)
+    from backend.schemas import SimInputA
+    req = SimInputA(session_id=1, lap_id=1, max_current=250)
     assert req.max_current == 220  # hard-capped by validator
 
 
 def test_compliance_check_endpoint(client, auth_headers):
-    res = client.get("/api/compliance/check", headers=auth_headers)
+    kart = client.post("/api/karts", json={"name": "ComplianceKart"}, headers=auth_headers)
+    kart_id = kart.json()["id"]
+    res = client.post(f"/api/compliance/check?kart_id={kart_id}", headers=auth_headers)
     assert res.status_code == 200
     data = res.json()
-    assert "overall" in data
+    assert "passed" in data
     assert "items" in data

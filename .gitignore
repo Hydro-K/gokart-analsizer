@@ -1,4 +1,60 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# App data — user sessions, uploads, exports (never commit)
+data/
+uploads/
+exports/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Logs
+*.log
+logs/
+
+# OS
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# pytest / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Claude Code internals
+.claude/worktrees/
+.claude/settings.local.json

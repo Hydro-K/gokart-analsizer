@@ -69,41 +69,50 @@ def list_sessions(
 
 @router.post("/upload", status_code=202)
 def upload_session(
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     driver_id: int = Form(...),
     kart_id: int = Form(...),
     track_id: int = Form(...),
-    date: str = Form(...),
+    date: Optional[str] = Form(None),
     session_type: str = Form("Practice 1"),
     notes: str = Form(""),
     db: sqlite3.Connection = Depends(get_db),
     _=Depends(require_engineer),
 ):
+    import datetime
+    session_date = date or datetime.date.today().isoformat()
+
     # Validate FK existence
     for table, fk_id, label in [("drivers", driver_id, "Driver"), ("karts", kart_id, "Kart"), ("tracks", track_id, "Track")]:
         if not db.execute(f"SELECT id FROM {table} WHERE id=?", (fk_id,)).fetchone():
             raise HTTPException(400, f"{label} ID {fk_id} not found. Create it first.")
 
-    # Save uploaded file
-    safe_name = f"{uuid.uuid4().hex}_{Path(file.filename or 'session.csv').name}"
-    dest = cfg.UPLOAD_DIR / safe_name
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    if not files:
+        raise HTTPException(400, "At least one CSV file is required.")
 
-    # Create session record
+    # Save all uploaded files and collect paths
+    saved_paths: list[str] = []
+    for upload in files:
+        safe_name = f"{uuid.uuid4().hex}_{Path(upload.filename or 'session.csv').name}"
+        dest = cfg.UPLOAD_DIR / safe_name
+        with open(dest, "wb") as fh:
+            shutil.copyfileobj(upload.file, fh)
+        saved_paths.append(str(dest))
+
+    # Create session record (primary file = first saved path)
     cur = db.execute(
         "INSERT INTO sessions(driver_id, kart_id, track_id, date, session_type, raw_file_path, notes) "
         "VALUES(?,?,?,?,?,?,?)",
-        (driver_id, kart_id, track_id, date, session_type, str(dest), notes),
+        (driver_id, kart_id, track_id, session_date, session_type, saved_paths[0], notes),
     )
     session_id = cur.lastrowid
 
-    # Queue ingestion job
+    # Queue ingestion job with all file paths for stitching
     job_cur = db.execute(
         "INSERT INTO jobs(type, priority, payload_json) VALUES(?,?,?)",
-        ("ingest_csv", 1, json.dumps({"session_id": session_id, "file_path": str(dest)})),
+        ("ingest_csv", 1, json.dumps({"session_id": session_id, "file_paths": saved_paths})),
     )
-    return {"session_id": session_id, "job_id": job_cur.lastrowid, "message": "Upload received, processing queued"}
+    return {"session_id": session_id, "job_id": job_cur.lastrowid, "message": f"Upload received ({len(saved_paths)} file(s)), processing queued"}
 
 
 @router.get("/{session_id}", response_model=SessionOut)

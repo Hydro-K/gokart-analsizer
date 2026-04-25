@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import backend.config as cfg
-from backend.database import init_db, get_db
+from backend.database import init_db, create_connection
 
 log = logging.getLogger(__name__)
 logging.basicConfig(
@@ -32,8 +32,8 @@ async def lifespan(app: FastAPI):
     init_db()
     log.info("Database initialized at %s", cfg.DB_PATH)
 
-    from backend.services.job_runner import start_job_runner
-    runner_task = asyncio.create_task(start_job_runner())
+    from backend.services.job_runner import run_forever
+    runner_task = asyncio.create_task(run_forever())
     log.info("Job runner started")
 
     yield
@@ -84,16 +84,38 @@ app.include_router(storage.router,     prefix="/api/storage",     tags=["storage
 app.include_router(export.router,      prefix="/api/export",      tags=["export"])
 
 
+@app.get("/api/benchmarks")
+def all_benchmarks(_: Request):
+    """All-time best laps per driver+kart+track combination."""
+    from backend.routers.auth import get_current_user
+    db = create_connection()
+    try:
+        rows = db.execute(
+            "SELECT b.*, d.name as driver_name, k.name as kart_name, t.name as track_name "
+            "FROM benchmarks b "
+            "LEFT JOIN drivers d ON d.id=b.driver_id "
+            "LEFT JOIN karts k ON k.id=b.kart_id "
+            "LEFT JOIN tracks t ON t.id=b.track_id "
+            "ORDER BY b.best_ever_s ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
 @app.get("/api/system/status")
 def system_status():
     """Health check + first-boot detection. No auth required."""
-    with get_db() as db:
+    db = create_connection()
+    try:
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         session_count = db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         driver_count = db.execute("SELECT COUNT(*) FROM drivers").fetchone()[0]
         pending_jobs = db.execute(
             "SELECT COUNT(*) FROM jobs WHERE status='pending'"
         ).fetchone()[0]
+    finally:
+        db.close()
 
     import shutil
     disk = shutil.disk_usage(str(cfg.DATA_DIR))

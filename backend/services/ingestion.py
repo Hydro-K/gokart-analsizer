@@ -12,41 +12,37 @@ log = logging.getLogger(__name__)
 
 
 def ingest_csv(session_id: int, file_path: str, db: sqlite3.Connection) -> dict:
-    """Full ingestion pipeline for an AiM CSV file.
-
-    Steps:
-    1. Parse CSV (data_loader)
-    2. Detect laps (lap_analyzer)
-    3. Persist laps + lap_telemetry
-    4. Extract ML feature vectors
-    5. Reconstruct GPS track if new data
-    6. Update benchmarks
-    """
+    """Ingest a single AiM CSV file."""
     from backend.analysis.data_loader import load_aim_csv
-    from backend.analysis.lap_analyzer import analyse_session
 
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"CSV not found: {file_path}")
-
-    # 1. Parse
     raw = load_aim_csv(str(path))
     if raw.warnings:
         log.warning("CSV warnings for session %d: %s", session_id, raw.warnings)
+    return _ingest_raw(session_id, raw, db)
 
-    # 2. Analyse
-    session_analysis = analyse_session(raw)
+
+def _ingest_raw(session_id: int, raw, db: sqlite3.Connection) -> dict:
+    """Core ingestion pipeline given a parsed RawSessionData object."""
+    from backend.analysis.lap_analyzer import analyse_session
+
+    # 1. Detect laps
+    session_analysis = analyse_session(
+        raw.time, raw.speed, raw.lat, raw.lon, raw.beacon, raw.has_beacon
+    )
     if not session_analysis.laps:
-        raise ValueError("No laps detected in the file")
+        raise ValueError("No laps detected in the uploaded file(s). "
+                         "Check that the CSV contains speed data and at least one full lap.")
 
-    # Fetch session metadata
     sess_row = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
     driver_id = sess_row["driver_id"]
     kart_id   = sess_row["kart_id"]
     track_id  = sess_row["track_id"]
 
     lap_ids = []
-    # 3. Persist laps
+    # 2. Persist laps + telemetry
     for lap in session_analysis.laps:
         cur = db.execute(
             "INSERT INTO laps(session_id, driver_id, kart_id, track_id, lap_number, lap_time_s, is_valid) "
@@ -59,22 +55,49 @@ def ingest_csv(session_id: int, file_path: str, db: sqlite3.Connection) -> dict:
 
         time_list  = [float(t) for t in lap.time]
         speed_list = [float(s) for s in lap.speed]
-        lat_list   = [float(v) for v in lap.lat]  if hasattr(lap, "lat")  and lap.lat  is not None and len(lap.lat)  > 0 else None
-        lon_list   = [float(v) for v in lap.lon]  if hasattr(lap, "lon")  and lap.lon  is not None and len(lap.lon)  > 0 else None
-        phase_list = list(lap.phase)               if hasattr(lap, "phase") and lap.phase is not None and len(lap.phase) > 0 else None
+        lat_list   = [float(v) for v in lap.lat]   if hasattr(lap, "lat")   and lap.lat   is not None and len(lap.lat)   > 0 else None
+        lon_list   = [float(v) for v in lap.lon]   if hasattr(lap, "lon")   and lap.lon   is not None and len(lap.lon)   > 0 else None
+        phase_list = list(lap.phase)                if hasattr(lap, "phase") and lap.phase is not None and len(lap.phase) > 0 else None
+
+        def _slice_channel(raw_arr, start_idx: int, end_idx: int):
+            if raw_arr is None:
+                return None
+            try:
+                sl = raw_arr[start_idx:end_idx + 1]
+                return [float(v) for v in sl] if len(sl) > 0 else None
+            except Exception:
+                return None
+
+        si, ei = lap.start_idx, lap.end_idx
+        lat_acc_list  = _slice_channel(getattr(raw, "lateral_acc",  None), si, ei)
+        inl_acc_list  = _slice_channel(getattr(raw, "inline_acc",   None), si, ei)
+        yaw_list      = _slice_channel(getattr(raw, "yaw_rate",     None), si, ei)
+        roll_list     = _slice_channel(getattr(raw, "roll_rate",    None), si, ei)
+        pitch_list    = _slice_channel(getattr(raw, "pitch_rate",   None), si, ei)
+        vert_acc_list = _slice_channel(getattr(raw, "vertical_acc", None), si, ei)
+        batt_v_list   = _slice_channel(getattr(raw, "battery_v",   None), si, ei)
 
         db.execute(
-            "INSERT INTO lap_telemetry(lap_id, time_json, speed_json, lat_json, lon_json, phase_json) "
-            "VALUES(?,?,?,?,?,?)",
+            "INSERT INTO lap_telemetry(lap_id, time_json, speed_json, lat_json, lon_json, phase_json,"
+            " lateral_acc_json, inline_acc_json, yaw_rate_json, roll_rate_json,"
+            " pitch_rate_json, vertical_acc_json, battery_v_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (lap_id,
              json.dumps(time_list),
              json.dumps(speed_list),
-             json.dumps(lat_list)   if lat_list   else None,
-             json.dumps(lon_list)   if lon_list   else None,
-             json.dumps(phase_list) if phase_list else None),
+             json.dumps(lat_list)      if lat_list      else None,
+             json.dumps(lon_list)      if lon_list      else None,
+             json.dumps(phase_list)    if phase_list    else None,
+             json.dumps(lat_acc_list)  if lat_acc_list  else None,
+             json.dumps(inl_acc_list)  if inl_acc_list  else None,
+             json.dumps(yaw_list)      if yaw_list      else None,
+             json.dumps(roll_list)     if roll_list     else None,
+             json.dumps(pitch_list)    if pitch_list    else None,
+             json.dumps(vert_acc_list) if vert_acc_list else None,
+             json.dumps(batt_v_list)   if batt_v_list   else None),
         )
 
-    # 4. Extract ML features
+    # 3. Extract ML features
     for i, lap in enumerate(session_analysis.laps):
         try:
             from backend.analysis.ml.feature_extractor import extract_features
@@ -94,7 +117,7 @@ def ingest_csv(session_id: int, file_path: str, db: sqlite3.Connection) -> dict:
         except Exception as e:
             log.warning("Feature extraction failed for lap %d: %s", lap_ids[i], e)
 
-    # 5. GPS track reconstruction if we have GPS data
+    # 4. GPS track reconstruction if we have GPS data
     has_gps = any(
         db.execute("SELECT lat_json FROM lap_telemetry WHERE lap_id=?", (lid,)).fetchone()["lat_json"]
         for lid in lap_ids
@@ -110,7 +133,7 @@ def ingest_csv(session_id: int, file_path: str, db: sqlite3.Connection) -> dict:
         if track_map_row and not track_map_row["local_xy"] and best_lap_row:
             _rebuild_track_map(track_id, best_lap_row["id"], db)
 
-    # 6. Update benchmarks
+    # 5. Update benchmarks
     _update_benchmarks(session_id, driver_id, kart_id, track_id, db)
 
     # Auto-trigger ML if driver has enough features
@@ -129,6 +152,109 @@ def ingest_csv(session_id: int, file_path: str, db: sqlite3.Connection) -> dict:
         "has_gps": has_gps,
         "warnings": raw.warnings,
     }
+
+
+def _stitch_raw_sessions(raws: list) -> "RawSessionData":
+    """Concatenate multiple RawSessionData objects in chronological order.
+
+    AiM files from the same session have relative timestamps starting near 0.
+    This offsets each file's time so they chain end-to-end before merging.
+    """
+    from backend.analysis.data_loader import RawSessionData
+
+    if len(raws) == 1:
+        return raws[0]
+
+    # Detect absolute vs relative timestamps
+    # Relative: all files start near 0 (< 60s); absolute: large epoch values
+    all_relative = all(r.time[0] < 60 for r in raws if len(r.time) > 0)
+
+    if all_relative:
+        # Sort by filename so session_001.csv < session_002.csv etc.
+        raws = sorted(raws, key=lambda r: r.filename)
+    else:
+        # Absolute timestamps — sort by first sample value
+        raws = sorted(raws, key=lambda r: r.time[0] if len(r.time) > 0 else 0)
+
+    time_out, speed_out, lat_out, lon_out, beacon_out = [], [], [], [], []
+    all_warnings: list = []
+    offset = 0.0
+
+    for i, raw in enumerate(raws):
+        t = raw.time.copy()
+        if all_relative:
+            t = t + offset
+            # Next file offset = end of this file + small gap to separate sessions
+            offset = float(t[-1]) + 0.2 if len(t) else offset
+
+        time_out.append(t)
+        speed_out.append(raw.speed)
+        lat_out.append(raw.lat)
+        lon_out.append(raw.lon)
+        beacon_out.append(raw.beacon)
+        all_warnings.extend(raw.warnings)
+
+    return RawSessionData(
+        time=np.concatenate(time_out),
+        speed=np.concatenate(speed_out),
+        lat=np.concatenate(lat_out),
+        lon=np.concatenate(lon_out),
+        beacon=np.concatenate(beacon_out),
+        has_gps=any(r.has_gps for r in raws),
+        has_beacon=any(r.has_beacon for r in raws),
+        filename=" + ".join(r.filename for r in raws),
+        sample_rate=raws[0].sample_rate,
+        warnings=all_warnings,
+    )
+
+
+def ingest_csv_files(session_id: int, file_paths: list, db: sqlite3.Connection) -> dict:
+    """Ingest multiple CSV files. Detects AiM session folders automatically."""
+    from backend.analysis.data_loader import load_aim_csv, load_aim_folder
+
+    # Detect AiM session folder: 4+ files whose names contain AiM channel keywords
+    aim_keywords = {"gps", "laps", "lateralacc", "inlineacc", "yawrate",
+                    "rollrate", "pitchrate", "verticalacc", "battery"}
+    names = [Path(fp).stem.lower().replace(" ", "").replace("_", "") for fp in file_paths]
+    aim_channel_count = sum(
+        1 for n in names if any(kw in n for kw in aim_keywords)
+    )
+    is_aim_folder = aim_channel_count >= 3
+
+    if is_aim_folder:
+        # Save all files to a temp folder and use folder loader
+        from pathlib import Path as _P
+        import tempfile, shutil
+        tmp = _P(tempfile.mkdtemp(prefix="stratos_aim_"))
+        try:
+            for fp in file_paths:
+                shutil.copy2(fp, tmp / _P(fp).name)
+            raw = load_aim_folder(str(tmp))
+            raw.warnings.append(f"Loaded as AiM session folder ({len(file_paths)} channel files)")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return _ingest_raw(session_id, raw, db)
+
+    # Standard multi-file stitch
+    raws = []
+    combined_warnings: list = []
+    for fp in file_paths:
+        path = Path(fp)
+        if not path.exists():
+            raise FileNotFoundError(f"CSV not found: {fp}")
+        raw = load_aim_csv(str(path))
+        raws.append(raw)
+        combined_warnings.extend(raw.warnings)
+
+    if not raws:
+        raise ValueError("No files to ingest")
+
+    stitched = _stitch_raw_sessions(raws)
+    stitched.warnings = combined_warnings
+    if len(raws) > 1:
+        log.info("Stitched %d files for session %d: %s", len(raws), session_id, stitched.filename)
+
+    return _ingest_raw(session_id, stitched, db)
 
 
 def _rebuild_track_map(track_id: int, lap_id: int, db: sqlite3.Connection) -> None:

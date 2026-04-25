@@ -10,7 +10,7 @@ export default function Tracks() {
   const [error, setError]         = useState('')
 
   const load = () => api.get<Track[]>('/tracks').then(setTracks).catch(() => {})
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const selectTrack = async (t: Track) => {
     setSelected(t)

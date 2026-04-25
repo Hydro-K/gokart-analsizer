@@ -98,6 +98,14 @@ class RawSessionData:
     driver_name: str = "Driver"
     sample_rate: float = 10.0       # Hz
     warnings:    List[str] = field(default_factory=list)
+    # Extended AiM channels (None if not present)
+    lateral_acc:  Optional[np.ndarray] = None   # G
+    inline_acc:   Optional[np.ndarray] = None   # G  (longitudinal)
+    yaw_rate:     Optional[np.ndarray] = None   # deg/s
+    roll_rate:    Optional[np.ndarray] = None   # deg/s
+    pitch_rate:   Optional[np.ndarray] = None   # deg/s
+    vertical_acc: Optional[np.ndarray] = None   # G
+    battery_v:    Optional[np.ndarray] = None   # volts
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +336,157 @@ def load_aim_csv(filepath: str) -> RawSessionData:
         sample_rate=sample_rate,
         warnings=warnings,
     )
+
+
+# ---------------------------------------------------------------------------
+# AiM Solo 2 multi-channel folder loader
+# ---------------------------------------------------------------------------
+
+# Map file suffix patterns → RawSessionData field
+_CHANNEL_PATTERNS: list[tuple[str, str]] = [
+    ("lateralacc",    "lateral_acc"),
+    ("inlineacc",     "inline_acc"),
+    ("yawrate",       "yaw_rate"),
+    ("rollrate",      "roll_rate"),
+    ("pitchrate",     "pitch_rate"),
+    ("verticalacc",   "vertical_acc"),
+    ("battery",       "battery_v"),
+]
+
+
+def _match_channel(filename: str) -> Optional[str]:
+    """Return field name for an AiM channel CSV filename, else None."""
+    stem = Path(filename).stem.lower().replace(" ", "").replace("_", "").replace("-", "")
+    for pattern, field in _CHANNEL_PATTERNS:
+        if stem.endswith(pattern) or pattern in stem:
+            return field
+    return None
+
+
+def _load_single_channel(filepath: str, base_time: np.ndarray) -> Optional[np.ndarray]:
+    """Load one AiM channel CSV and resample to base_time."""
+    try:
+        row = _find_header_row(filepath)
+        df = pd.read_csv(filepath, skiprows=range(row), header=0,
+                         skip_blank_lines=False, on_bad_lines="skip",
+                         encoding_errors="replace", dtype=str)
+        df.columns = [str(c).strip().strip('"') for c in df.columns]
+        if df.columns[0].startswith("Unnamed") or df.columns[0].strip() == "":
+            df = df.iloc[:, 1:]
+        if len(df) > 0 and _is_unit_row(df.iloc[0]):
+            df = df.iloc[1:].reset_index(drop=True)
+        df.replace("", np.nan, inplace=True)
+        df.dropna(how="all", inplace=True)
+        df = df.apply(pd.to_numeric, errors="coerce")
+        df.dropna(how="all", inplace=True)
+        if len(df) < 2 or len(df.columns) < 2:
+            return None
+        t_col = df.columns[0]
+        v_col = df.columns[1]
+        t_arr = df[t_col].to_numpy(dtype=float)
+        v_arr = df[v_col].to_numpy(dtype=float)
+        # ms → s
+        if len(t_arr) > 1 and t_arr[1] > 500:
+            t_arr /= 1000.0
+        valid = ~(np.isnan(t_arr) | np.isnan(v_arr))
+        if valid.sum() < 2:
+            return None
+        # resample to base_time grid
+        return np.interp(base_time, t_arr[valid], v_arr[valid])
+    except Exception:
+        return None
+
+
+def _load_laps_and_splits(filepath: str) -> Optional[np.ndarray]:
+    """Extract lap timestamps from an AiM _laps_and_splits.csv."""
+    try:
+        row = _find_header_row(filepath)
+        df = pd.read_csv(filepath, skiprows=range(row), header=0,
+                         on_bad_lines="skip", encoding_errors="replace", dtype=str)
+        df.columns = [str(c).strip().strip('"') for c in df.columns]
+        if len(df) > 0 and _is_unit_row(df.iloc[0]):
+            df = df.iloc[1:].reset_index(drop=True)
+        df.replace("", np.nan, inplace=True)
+        df.dropna(how="all", inplace=True)
+        df = df.apply(pd.to_numeric, errors="coerce")
+        # Return array of lap start times
+        for col in df.columns:
+            norm = _norm(col)
+            if any(kw in norm for kw in ["time", "start", "lap"]):
+                arr = df[col].dropna().to_numpy(dtype=float)
+                if len(arr) > 0:
+                    if arr[0] > 500:
+                        arr /= 1000.0
+                    return arr
+    except Exception:
+        pass
+    return None
+
+
+def load_aim_folder(folder_path: str) -> RawSessionData:
+    """
+    Load a full AiM Solo 2 session folder containing up to 10 channel CSVs:
+      _GPS.csv, _GPS_o.csv, _laps_and_splits.csv,
+      InlineAcc.csv, LateralAcc.csv, PitchRate.csv,
+      RollRate.csv, VerticalAcc.csv, YawRate.csv,
+      internal Battery.csv
+
+    Returns a merged RawSessionData with all available channels populated.
+    """
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        raise ValueError(f"Not a directory: {folder_path}")
+
+    csv_files = list(folder.glob("*.csv")) + list(folder.glob("*.CSV"))
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV files found in {folder_path}")
+
+    # Identify primary GPS file
+    gps_file: Optional[Path] = None
+    laps_file: Optional[Path] = None
+    channel_files: dict[str, Path] = {}
+
+    for f in csv_files:
+        stem_low = f.stem.lower().replace(" ", "").replace("_", "")
+        if stem_low.endswith("lapssplits") or "laps" in stem_low and "split" in stem_low:
+            laps_file = f
+        elif stem_low.endswith("gpso") or stem_low.endswith("gpsoverlay"):
+            pass  # skip overlay; use primary
+        elif stem_low.endswith("gps") or "gps" in stem_low:
+            if gps_file is None:
+                gps_file = f
+        else:
+            field = _match_channel(f.name)
+            if field:
+                channel_files[field] = f
+
+    if gps_file is None and csv_files:
+        # Fall back to largest CSV as primary
+        gps_file = max(csv_files, key=lambda f: f.stat().st_size)
+
+    # Load primary GPS file
+    base = load_aim_csv(str(gps_file))
+
+    # Override beacon with laps_and_splits if available
+    if laps_file is not None:
+        lap_times = _load_laps_and_splits(str(laps_file))
+        if lap_times is not None and len(lap_times) > 1:
+            beacon = np.zeros(len(base.time))
+            for lt in lap_times:
+                idx = int(np.argmin(np.abs(base.time - lt)))
+                if 0 <= idx < len(beacon):
+                    beacon[idx] = 1.0
+            base.beacon = beacon
+            base.has_beacon = True
+            base.warnings.append(
+                f"Lap times from {laps_file.name}: {len(lap_times)} lap boundaries loaded."
+            )
+
+    # Load additional channels
+    for field, path in channel_files.items():
+        arr = _load_single_channel(str(path), base.time)
+        if arr is not None:
+            setattr(base, field, arr)
+
+    base.filename = folder.name
+    return base
