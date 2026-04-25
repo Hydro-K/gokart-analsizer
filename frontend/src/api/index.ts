@@ -23,7 +23,11 @@ export interface SystemStatus {
   storage: { used_pct: number; status: string }
 }
 
+export interface ComplianceItem {
+  rule_name: string; rule_section: string; status: string
+  current_value: string; limit_value: string; message: string; actionable: string
+}
 export interface ComplianceResult {
-  overall: string
-  items: { name: string; status: string; detail: string }[]
+  passed: boolean
+  items: ComplianceItem[]
 }

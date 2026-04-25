@@ -62,8 +62,9 @@ def check_compliance(
     checker = ComplianceChecker(rules)
     report = checker.check(settings, gear)
     items = [ComplianceItemOut(
-        rule_name=i.rule_name, status=i.status,
-        measured=i.measured, limit=i.limit,
-        message=i.message, actionable=i.actionable,
+        rule_name=i.rule_name, rule_section=i.rule_section,
+        status=i.status, current_value=i.current_value,
+        limit_value=i.limit_value, message=i.message,
+        actionable=i.actionable,
     ) for i in report.items]
     return ComplianceReportOut(passed=report.passed, items=items)

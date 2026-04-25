@@ -256,9 +256,10 @@ class SetupOut(BaseModel):
 
 class ComplianceItemOut(BaseModel):
     rule_name: str
-    status: str       # PASS | FAIL | WARN | VERIFY
-    measured: Optional[float]
-    limit: Optional[float]
+    rule_section: str = ""
+    status: str           # PASS | FAIL | WARN | VERIFY
+    current_value: str = ""
+    limit_value: str = ""
     message: str
     actionable: str
 

@@ -155,7 +155,8 @@ def _rebuild_track_map(track_id: int, lap_id: int, db: sqlite3.Connection) -> No
 def _update_benchmarks(session_id: int, driver_id: int, kart_id: int, track_id: int,
                         db: sqlite3.Connection) -> None:
     try:
-        from backend.analysis.deep_analysis import theoretical_best_lap
+        from backend.analysis.deep_analysis import sector_splits
+        from backend.analysis.lap_analyzer import LapData
         lap_rows = db.execute(
             "SELECT l.id, l.lap_time_s, t.time_json, t.speed_json FROM laps l "
             "JOIN lap_telemetry t ON t.lap_id=l.id "
@@ -166,8 +167,7 @@ def _update_benchmarks(session_id: int, driver_id: int, kart_id: int, track_id: 
             return
         session_best = lap_rows[0]["lap_time_s"]
 
-        # Theoretical best from sector analysis
-        from backend.analysis.lap_analyzer import LapData
+        # Build LapData list for theoretical best calculation
         laps_obj = []
         for lr in lap_rows:
             try:
@@ -177,7 +177,24 @@ def _update_benchmarks(session_id: int, driver_id: int, kart_id: int, track_id: 
                                         lap_time=lr["lap_time_s"], time=t, speed=s))
             except Exception:
                 continue
-        theo_best = theoretical_best_lap(laps_obj) if len(laps_obj) >= 2 else session_best
+
+        # Theoretical best: sum of best sector time across all laps (inline, n=5 sectors)
+        theo_best = session_best
+        if len(laps_obj) >= 2:
+            try:
+                N_SECTORS = 5
+                all_sectors = []
+                for lap in laps_obj:
+                    segs = sector_splits(lap, N_SECTORS)
+                    if len(segs) == N_SECTORS:
+                        all_sectors.append(segs)
+                if all_sectors:
+                    theo_best = sum(
+                        min(all_sectors[l][s].time_s for l in range(len(all_sectors)))
+                        for s in range(N_SECTORS)
+                    )
+            except Exception:
+                theo_best = session_best
 
         # Best ever for this driver+kart+track
         prev = db.execute(

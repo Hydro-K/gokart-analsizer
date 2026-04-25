@@ -2,6 +2,14 @@
 
 Strat-OS is a fully offline, Raspberry Pi-hosted web application for EV kart race engineering. Upload AiM CSV telemetry, analyse laps, run simulations, check compliance, and review driver performance — all from any device connected to the kart's Wi-Fi hotspot.
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| **README.md** (this file) | Installation, quick start, API reference, troubleshooting |
+| [docs/HOW_TO_USE.md](docs/HOW_TO_USE.md) | Complete step-by-step usage guide for every feature |
+| [docs/SYSTEMS.md](docs/SYSTEMS.md) | How every system works internally — algorithms, data flow, design decisions |
+
 ---
 
 ## Table of Contents

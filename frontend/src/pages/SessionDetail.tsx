@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { api, Session, Lap } from '../api'
+import { api, Session, Lap, ComplianceResult } from '../api'
 import { MetricCard } from '../components/common/MetricCard'
 import { StatusBadge } from '../components/common/StatusBadge'
 import { useUIStore } from '../store/uiStore'
@@ -11,8 +11,7 @@ function fmt(s: number) {
   return `${m}:${sec}`
 }
 
-interface ComplianceItem { name: string; status: string; detail: string }
-interface ComplianceResult { overall: string; items: ComplianceItem[] }
+import { ComplianceResult } from '../api'
 
 export default function SessionDetail() {
   const { id } = useParams<{ id: string }>()
@@ -102,14 +101,14 @@ export default function SessionDetail() {
         <div>
           <div className="flex items-center gap-3 mb-3">
             <h2 className="text-lg font-bold text-white">Compliance</h2>
-            <StatusBadge status={compliance.overall} />
+            <StatusBadge status={compliance.passed ? 'pass' : 'fail'} />
           </div>
           <div className="space-y-1">
             {compliance.items.map((item, i) => (
               <div key={i} className="flex items-center gap-3 rounded px-3 py-2 bg-surface border border-border text-sm">
                 <StatusBadge status={item.status} />
-                <span className="text-white">{item.name}</span>
-                <span className="text-gray-400 text-xs ml-auto">{item.detail}</span>
+                <span className="text-white">{item.rule_name}</span>
+                <span className="text-gray-400 text-xs ml-auto">{item.current_value}</span>
               </div>
             ))}
           </div>
