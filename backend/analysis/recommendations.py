@@ -552,7 +552,7 @@ class RecommendationEngine:
                 mass_kg=160.0,
                 battery_capacity_kwh=self.rules.battery_capacity_wh / 1000.0,
             )
-            wh_per_lap = energy.energy_used_wh
+            wh_per_lap = energy.net_kwh * 1000
             capacity   = self.rules.battery_capacity_wh
             laps_est   = capacity / wh_per_lap if wh_per_lap > 0 else 0
 

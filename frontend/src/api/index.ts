@@ -12,7 +12,7 @@ export interface Session {
   lap_count: number; best_lap_s: number | null; created_at: string
 }
 
-export interface Lap      { id: number; session_id: number; lap_number: number; lap_time_s: number; is_valid: boolean }
+export interface Lap      { id: number; session_id: number; lap_number: number; lap_time_s: number; is_valid: boolean; created_at?: string }
 export interface Job      { id: number; type: string; status: string; priority: number; created_at: string; updated_at: string; result_json?: string; error_msg?: string }
 export interface User     { id: number; username: string; display_name: string; role: string; created_at: string }
 
@@ -24,9 +24,9 @@ export interface Telemetry {
   lon?: number[] | null
   phase?: string[] | null
   has_gps: boolean
-  lateral_acc?: number[] | null   // G
-  inline_acc?:  number[] | null   // G
-  yaw_rate?:    number[] | null   // deg/s
+  lateral_acc?: number[] | null
+  inline_acc?:  number[] | null
+  yaw_rate?:    number[] | null
 }
 
 export interface EnergyResult {
