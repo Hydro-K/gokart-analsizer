@@ -169,6 +169,15 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Day Report generator */}
+      <div className="rounded-lg border border-border bg-surface p-4 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Day Report</h2>
+          <p className="text-xs text-gray-500 mt-0.5">Generate a full PDF analysis — lap times, energy, tire pressures, ML suggestions.</p>
+        </div>
+        <DayReportDownload />
+      </div>
+
       {mode === 'beginner' && (
         <div className="rounded-lg border border-border bg-surface p-4 text-sm text-gray-400 flex items-start gap-3">
           <span className="text-accent text-lg shrink-0">ℹ</span>
@@ -178,6 +187,21 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function DayReportDownload() {
+  const today = new Date().toISOString().slice(0, 10)
+  const [date, setDate] = useState(today)
+  return (
+    <div className="flex items-center gap-2">
+      <input type="date" value={date} onChange={e => setDate(e.target.value)}
+        className="bg-bg border border-border rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-accent" />
+      <a href={`/api/reports/day/${date}`} target="_blank" rel="noreferrer"
+        className="px-4 py-1.5 bg-accent text-bg text-sm font-bold rounded hover:opacity-90 whitespace-nowrap">
+        Download PDF
+      </a>
     </div>
   )
 }

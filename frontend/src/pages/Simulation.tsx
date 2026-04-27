@@ -5,10 +5,11 @@ import { JobProgress } from '../components/common/JobProgress'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 
 interface ModeAResult {
-  delta_lap_time_s: number
-  predicted_lap_time_s: number
-  delta_points: number[]
-  energy_delta_kwh: number
+  original_lap_time_s: number
+  simulated_lap_time_s: number
+  delta_s: number
+  delta_pct: number
+  energy_kwh: number | null
 }
 
 export default function Simulation() {
@@ -23,11 +24,11 @@ export default function Simulation() {
 
   const [form, setForm] = useState({
     max_current: '200',
-    accel_rate: '1.0',
+    accel_rate: '64',
     speed_limit_pct: '100',
     gear_ratio_new: '8.0',
     gear_ratio_old: '8.0',
-    mass_new_kg: '115',
+    mass_new_lbs: '253.5',  // 115 kg ≈ 253.5 lbs
     mode: 'a',
     goal: 'lap_time',
     weight_speed: '0.5',
@@ -56,13 +57,14 @@ export default function Simulation() {
     try {
       if (form.mode === 'a') {
         const res = await api.post<ModeAResult>('/simulation/mode-a', {
+          session_id: parseInt(sessionId),
           lap_id: parseInt(lapId),
           max_current: parseInt(form.max_current),
-          accel_rate: parseFloat(form.accel_rate),
-          speed_limit_pct: parseFloat(form.speed_limit_pct),
+          accel_rate: parseInt(form.accel_rate),
+          speed_limit_pct: parseInt(form.speed_limit_pct),
           gear_ratio_new: parseFloat(form.gear_ratio_new),
           gear_ratio_old: parseFloat(form.gear_ratio_old),
-          mass_new_kg: parseFloat(form.mass_new_kg),
+          mass_new_kg: parseFloat(form.mass_new_lbs) / 2.20462,
         })
         setResult(res)
       } else {
@@ -80,7 +82,6 @@ export default function Simulation() {
     finally { setLoading(false) }
   }
 
-  const deltaData = result?.delta_points.map((d, i) => ({ i, d: +d.toFixed(4) })) ?? []
   const bestTime = laps.find(l => l.id === parseInt(lapId))?.lap_time_s ?? 0
 
   function fmtTime(s: number) {
@@ -153,6 +154,11 @@ export default function Simulation() {
               <input type="number" step="0.1" value={form.gear_ratio_new} onChange={f('gear_ratio_new')}
                 className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent" />
             </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Combined Mass (lbs)</label>
+              <input type="number" step="0.5" value={form.mass_new_lbs} onChange={f('mass_new_lbs')}
+                className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent" />
+            </div>
           </div>
         )}
 
@@ -166,34 +172,44 @@ export default function Simulation() {
 
       {result && (
         <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <MetricCard
-              label="Delta"
-              value={`${result.delta_lap_time_s >= 0 ? '+' : ''}${result.delta_lap_time_s.toFixed(3)}`}
+              label="Time Delta"
+              value={`${result.delta_s >= 0 ? '+' : ''}${result.delta_s.toFixed(3)}`}
               unit="s"
-              highlight={result.delta_lap_time_s < 0}
+              highlight={result.delta_s < 0}
             />
-            <MetricCard label="Predicted" value={fmtTime(result.predicted_lap_time_s)} />
-            <MetricCard label="Energy Δ" value={`${result.energy_delta_kwh >= 0 ? '+' : ''}${result.energy_delta_kwh.toFixed(4)}`} unit="kWh" />
+            <MetricCard
+              label="Predicted"
+              value={fmtTime(result.simulated_lap_time_s)}
+            />
+            <MetricCard
+              label="Original"
+              value={fmtTime(result.original_lap_time_s)}
+            />
+            <MetricCard
+              label="Δ %"
+              value={`${result.delta_pct >= 0 ? '+' : ''}${result.delta_pct.toFixed(2)}`}
+              unit="%"
+              highlight={result.delta_pct < 0}
+            />
           </div>
-
-          {deltaData.length > 0 && (
-            <div>
-              <h2 className="text-sm font-bold text-gray-300 mb-2 uppercase tracking-wider">Time Delta</h2>
-              <div className="bg-surface border border-border rounded-lg p-3 h-40">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={deltaData}>
-                    <CartesianGrid stroke="#1a2a3a" strokeDasharray="3 3" />
-                    <XAxis dataKey="i" stroke="#666" tick={{ fontSize: 9 }} />
-                    <YAxis stroke="#666" tick={{ fontSize: 9 }} />
-                    <Tooltip contentStyle={{ background: '#112233', border: '1px solid #1a2a3a', fontSize: 11 }} />
-                    <ReferenceLine y={0} stroke="#666" />
-                    <Line type="monotone" dataKey="d" stroke="#FF8800" dot={false} strokeWidth={1.5} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+          {result.energy_kwh != null && (
+            <div className="bg-surface border border-border rounded p-3 text-sm text-gray-300">
+              Estimated energy: <span className="text-accent font-bold">{result.energy_kwh.toFixed(4)} kWh</span>
             </div>
           )}
+          <div className={`rounded p-3 text-sm font-bold text-center ${
+            result.delta_s < 0 ? 'bg-green-900 bg-opacity-30 text-accent border border-accent' :
+            result.delta_s > 0 ? 'bg-red-900 bg-opacity-30 text-red border border-red' :
+            'bg-surface border border-border text-gray-400'
+          }`}>
+            {result.delta_s < 0
+              ? `This setup saves ${Math.abs(result.delta_s).toFixed(3)}s per lap`
+              : result.delta_s > 0
+              ? `This setup costs ${result.delta_s.toFixed(3)}s per lap`
+              : 'No change from baseline'}
+          </div>
         </div>
       )}
     </div>

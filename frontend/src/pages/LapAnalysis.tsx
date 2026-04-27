@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, Telemetry, EnergyResult, SectorOut, CornerOut, FeatureVector, SmoothnessResult, Lap } from '../api'
 import { MetricCard } from '../components/common/MetricCard'
+import { mph as toMph, mphKmh } from '../utils/units'
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -54,6 +55,7 @@ function Tab({ active, onClick, children }: TabProps) {
 
 export default function LapAnalysis() {
   const { id } = useParams<{ id: string }>()
+  const nav = useNavigate()
   const [lap, setLap]           = useState<Lap | null>(null)
   const [tele, setTele]         = useState<Telemetry | null>(null)
   const [sectors, setSectors]   = useState<SectorOut[]>([])
@@ -61,7 +63,7 @@ export default function LapAnalysis() {
   const [energy, setEnergy]     = useState<EnergyResult | null>(null)
   const [smooth, setSmooth]     = useState<SmoothnessResult | null>(null)
   const [feats, setFeats]       = useState<FeatureVector | null>(null)
-  const [activeTab, setActiveTab] = useState<'trace'|'corners'|'sectors'|'energy'|'features'>('trace')
+  const [activeTab, setActiveTab] = useState<'trace'|'gforce'|'corners'|'sectors'|'energy'|'features'>('trace')
 
   useEffect(() => {
     if (!id) return
@@ -74,11 +76,11 @@ export default function LapAnalysis() {
     api.get<FeatureVector>(`/laps/${id}/features`).then(setFeats).catch(() => {})
   }, [id])
 
-  // Build speed trace data with phase color
+  // Build speed trace data with phase color (display in mph)
   const traceData = tele
     ? tele.time.map((t, i) => ({
         t: +t.toFixed(2),
-        v: +(tele.speed_ms[i] * 3.6).toFixed(1),
+        v: +toMph(tele.speed_ms[i]).toFixed(1),
         phase: tele.phase?.[i] ?? 'straight',
       }))
     : []
@@ -93,24 +95,24 @@ export default function LapAnalysis() {
     name, pct: +((count / total) * 100).toFixed(1), fill: PHASE_COLOR[name] ?? '#888'
   }))
 
-  // Sector bar data
+  // Sector bar data (convert km/h → mph for display)
   const sectorData = sectors.map(s => ({
     name: `S${s.sector_num}`,
     time: +s.time_s.toFixed(3),
-    avg: +s.avg_speed_kmh.toFixed(1),
-    min: +s.min_speed_kmh.toFixed(1),
-    max: +s.max_speed_kmh.toFixed(1),
+    avg: +mphKmh(s.avg_speed_kmh).toFixed(1),
+    min: +mphKmh(s.min_speed_kmh).toFixed(1),
+    max: +mphKmh(s.max_speed_kmh).toFixed(1),
   }))
 
-  // Corner scatter
+  // Corner data (convert km/h → mph)
   const cornerData = corners.map(c => ({
     name: `C${c.corner_index}`,
-    entry: c.entry_speed_kmh,
-    apex: c.apex_speed_kmh,
-    exit: c.exit_speed_kmh,
+    entry: +mphKmh(c.entry_speed_kmh).toFixed(1),
+    apex:  +mphKmh(c.apex_speed_kmh).toFixed(1),
+    exit:  +mphKmh(c.exit_speed_kmh).toFixed(1),
   }))
 
-  const peakSpeed = tele ? Math.max(...tele.speed_ms.map(s => s * 3.6)) : 0
+  const peakSpeed = tele ? Math.max(...tele.speed_ms.map(s => toMph(s))) : 0
 
   return (
     <div className="space-y-5">
@@ -136,24 +138,35 @@ export default function LapAnalysis() {
             </div>
           )}
         </div>
-        <Link to={`/sessions/${lap?.session_id}`}
-          className="text-xs text-gray-400 hover:text-accent transition-colors">
-          ← Session
-        </Link>
+        <div className="flex items-center gap-3">
+          {tele?.has_gps && (
+            <button onClick={() => nav(`/replay/${id}`)}
+              className="px-3 py-1.5 bg-accent text-bg text-xs font-bold rounded hover:opacity-90 flex items-center gap-1.5">
+              ▶ Live Replay
+            </button>
+          )}
+          <Link to={`/sessions/${lap?.session_id}`}
+            className="text-xs text-gray-400 hover:text-accent transition-colors">
+            ← Session
+          </Link>
+        </div>
       </div>
 
       {/* Key metrics row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         {lap && <MetricCard label="Lap Time" value={fmt(lap.lap_time_s)} unit="" highlight />}
-        <MetricCard label="Peak Speed" value={peakSpeed.toFixed(1)} unit="km/h" />
+        <MetricCard label="Peak Speed" value={peakSpeed.toFixed(1)} unit="mph" />
         {energy && <MetricCard label="Energy" value={energy.total_kwh.toFixed(3)} unit="kWh" />}
         {energy && <MetricCard label="Peak Power" value={energy.peak_power_kw.toFixed(1)} unit="kW" />}
         {smooth && <MetricCard label="Smoothness" value={smooth.smoothness_score.toFixed(1)} unit="/100" highlight={smooth.smoothness_score > 75} />}
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-0 border-b border-border">
+      <div className="flex gap-0 border-b border-border overflow-x-auto">
         <Tab active={activeTab === 'trace'}    onClick={() => setActiveTab('trace')}>Speed Trace</Tab>
+        {(tele?.lateral_acc || tele?.inline_acc) && (
+          <Tab active={activeTab === 'gforce'} onClick={() => setActiveTab('gforce')}>G-Forces</Tab>
+        )}
         <Tab active={activeTab === 'corners'}  onClick={() => setActiveTab('corners')}>Corners ({corners.length})</Tab>
         <Tab active={activeTab === 'sectors'}  onClick={() => setActiveTab('sectors')}>Sectors</Tab>
         <Tab active={activeTab === 'energy'}   onClick={() => setActiveTab('energy')}>Energy</Tab>
@@ -177,14 +190,14 @@ export default function LapAnalysis() {
                   <XAxis dataKey="t" stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }}
                     label={{ value: 'Time (s)', position: 'insideBottom', offset: -10, fill: '#6a8090', fontSize: 10 }} />
                   <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }}
-                    label={{ value: 'km/h', angle: -90, position: 'insideLeft', offset: 10, fill: '#6a8090', fontSize: 10 }} />
+                    label={{ value: 'mph', angle: -90, position: 'insideLeft', offset: 10, fill: '#6a8090', fontSize: 10 }} />
                   <Tooltip
                     contentStyle={CHART_STYLE.tooltip}
                     labelStyle={{ color: '#aaa' }}
                     itemStyle={{ color: '#00BFFF' }}
                     formatter={(val: any, _name: any, props: any) => {
                       const color = PHASE_COLOR[props.payload.phase] ?? '#fff'
-                      return [<span style={{ color }}>{val} km/h</span>, props.payload.phase]
+                      return [<span style={{ color }}>{val} mph</span>, props.payload.phase]
                     }}
                     labelFormatter={(t: any) => `t = ${t}s`}
                   />
@@ -240,6 +253,110 @@ export default function LapAnalysis() {
         </div>
       )}
 
+      {/* G-Forces tab */}
+      {activeTab === 'gforce' && tele && (
+        <div className="space-y-4">
+          {/* Peak G summary */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {tele.lateral_acc && (() => {
+              const maxLat = Math.max(...tele.lateral_acc.map(Math.abs))
+              const maxLatL = Math.max(...tele.lateral_acc.map(v => -v))
+              const maxLatR = Math.max(...tele.lateral_acc)
+              return <>
+                <MetricCard label="Peak Lateral G" value={maxLat.toFixed(2)} unit="G" highlight={maxLat > 1.0} />
+                <MetricCard label="Max Left"  value={maxLatL.toFixed(2)} unit="G" />
+                <MetricCard label="Max Right" value={maxLatR.toFixed(2)} unit="G" />
+              </>
+            })()}
+            {tele.inline_acc && (() => {
+              const maxInl = Math.max(...tele.inline_acc.map(Math.abs))
+              return <MetricCard label="Peak Inline G" value={maxInl.toFixed(2)} unit="G" highlight={maxInl > 0.5} />
+            })()}
+          </div>
+
+          {/* Lateral G trace */}
+          {tele.lateral_acc && (
+            <div className="bg-surface border border-border rounded-lg p-4 h-52">
+              <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-2">Lateral G vs Time</h3>
+              <ResponsiveContainer width="100%" height="90%">
+                <AreaChart
+                  data={tele.time.map((t, i) => ({ t: +t.toFixed(2), g: +(tele.lateral_acc![i]).toFixed(3) }))}
+                  margin={{ top: 5, right: 10, bottom: 15, left: 10 }}>
+                  <CartesianGrid stroke={CHART_STYLE.grid} strokeDasharray="3 3" />
+                  <XAxis dataKey="t" stroke={CHART_STYLE.axis} tick={{ fontSize: 9 }}
+                    label={{ value: 'Time (s)', position: 'insideBottom', offset: -10, fill: '#6a8090', fontSize: 9 }} />
+                  <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 9 }}
+                    label={{ value: 'G', angle: -90, position: 'insideLeft', fill: '#6a8090', fontSize: 9 }} />
+                  <ReferenceLine y={0} stroke={CHART_STYLE.axis} strokeDasharray="2 2" />
+                  <Tooltip contentStyle={CHART_STYLE.tooltip}
+                    formatter={(v: any) => [`${v} G`, 'Lateral']} labelFormatter={(t: any) => `t=${t}s`} />
+                  <Area type="monotone" dataKey="g" stroke="#FFD700" fill="#FFD700" fillOpacity={0.15} dot={false} strokeWidth={1.5} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Inline G trace */}
+          {tele.inline_acc && (
+            <div className="bg-surface border border-border rounded-lg p-4 h-52">
+              <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-2">Inline G vs Time <span className="text-gray-600">(+accel / −braking)</span></h3>
+              <ResponsiveContainer width="100%" height="90%">
+                <AreaChart
+                  data={tele.time.map((t, i) => ({ t: +t.toFixed(2), g: +(tele.inline_acc![i]).toFixed(3) }))}
+                  margin={{ top: 5, right: 10, bottom: 15, left: 10 }}>
+                  <CartesianGrid stroke={CHART_STYLE.grid} strokeDasharray="3 3" />
+                  <XAxis dataKey="t" stroke={CHART_STYLE.axis} tick={{ fontSize: 9 }}
+                    label={{ value: 'Time (s)', position: 'insideBottom', offset: -10, fill: '#6a8090', fontSize: 9 }} />
+                  <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 9 }} />
+                  <ReferenceLine y={0} stroke={CHART_STYLE.axis} strokeDasharray="2 2" />
+                  <Tooltip contentStyle={CHART_STYLE.tooltip}
+                    formatter={(v: any) => [`${v} G`, 'Inline']} labelFormatter={(t: any) => `t=${t}s`} />
+                  <Area type="monotone" dataKey="g" stroke="#00BFFF" fill="#00BFFF" fillOpacity={0.15} dot={false} strokeWidth={1.5} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* GG diagram */}
+          {tele.lateral_acc && tele.inline_acc && (() => {
+            const ggData = tele.lateral_acc.map((lat, i) => ({
+              lat: +lat.toFixed(3), inl: +(tele.inline_acc![i]).toFixed(3)
+            }))
+            const envelope = 1.5
+            return (
+              <div className="bg-surface border border-border rounded-lg p-4">
+                <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-2">
+                  GG Diagram <span className="text-gray-600">— lateral vs inline (traction circle)</span>
+                </h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={ggData} margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                      <CartesianGrid stroke={CHART_STYLE.grid} strokeDasharray="3 3" />
+                      <XAxis type="number" dataKey="lat" domain={[-envelope, envelope]}
+                        stroke={CHART_STYLE.axis} tick={{ fontSize: 9 }}
+                        label={{ value: 'Lateral G', position: 'insideBottom', offset: -5, fill: '#6a8090', fontSize: 9 }} />
+                      <YAxis type="number" dataKey="inl" domain={[-envelope, envelope]}
+                        stroke={CHART_STYLE.axis} tick={{ fontSize: 9 }}
+                        label={{ value: 'Inline G', angle: -90, position: 'insideLeft', fill: '#6a8090', fontSize: 9 }} />
+                      <ReferenceLine y={0} stroke={CHART_STYLE.axis} strokeDasharray="2 2" />
+                      <ReferenceLine x={0} stroke={CHART_STYLE.axis} strokeDasharray="2 2" />
+                      <Tooltip contentStyle={CHART_STYLE.tooltip}
+                        formatter={(v: any, name: string) => [`${v} G`, name === 'inl' ? 'Inline' : 'Lateral']} />
+                      <Line type="linear" dataKey="inl" stroke="#00FF88" dot={{ r: 1, fill: '#00FF88' }}
+                        strokeWidth={0} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  A full traction circle means you're using available grip in all directions.
+                  Sparse corners indicate unused grip on corner entry/exit.
+                </p>
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
       {/* Corners tab */}
       {activeTab === 'corners' && (
         <div className="space-y-4">
@@ -253,9 +370,9 @@ export default function LapAnalysis() {
                   <BarChart data={cornerData} margin={{ top: 5, right: 10, bottom: 5, left: -10 }}>
                     <CartesianGrid stroke={CHART_STYLE.grid} strokeDasharray="3 3" />
                     <XAxis dataKey="name" stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }} />
-                    <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }} tickFormatter={v => `${v}`} unit=" km/h" />
+                    <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }} tickFormatter={v => `${v}`} unit=" mph" />
                     <Tooltip contentStyle={CHART_STYLE.tooltip}
-                      formatter={(v: any, name: string) => [`${(+v).toFixed(1)} km/h`, name]} />
+                      formatter={(v: any, name: string) => [`${(+v).toFixed(1)} mph`, name]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: '#888' }} />
                     <Bar dataKey="entry" name="Entry"  fill="#4488FF" radius={[2,2,0,0]} />
                     <Bar dataKey="apex"  name="Apex"   fill="#FFD700" radius={[2,2,0,0]} />
@@ -268,23 +385,26 @@ export default function LapAnalysis() {
                   <thead className="bg-surface text-xs text-gray-400 uppercase tracking-wider">
                     <tr>
                       <th className="px-4 py-3 text-left">Corner</th>
-                      <th className="px-4 py-3 text-right">Entry km/h</th>
-                      <th className="px-4 py-3 text-right">Apex km/h</th>
-                      <th className="px-4 py-3 text-right">Exit km/h</th>
+                      <th className="px-4 py-3 text-right">Entry mph</th>
+                      <th className="px-4 py-3 text-right">Apex mph</th>
+                      <th className="px-4 py-3 text-right">Exit mph</th>
                       <th className="px-4 py-3 text-right">Δ Entry→Apex</th>
                       <th className="px-4 py-3 text-right">Entry @ s</th>
                     </tr>
                   </thead>
                   <tbody>
                     {corners.map(c => {
-                      const drop = c.entry_speed_kmh - c.apex_speed_kmh
+                      const entryMph = mphKmh(c.entry_speed_kmh)
+                      const apexMph  = mphKmh(c.apex_speed_kmh)
+                      const exitMph  = mphKmh(c.exit_speed_kmh)
+                      const drop = entryMph - apexMph
                       return (
                         <tr key={c.corner_index} className="border-t border-border hover:bg-surface transition-colors">
                           <td className="px-4 py-2.5 text-white font-bold font-mono">C{c.corner_index}</td>
-                          <td className="px-4 py-2.5 text-right font-mono text-blue-400">{c.entry_speed_kmh.toFixed(1)}</td>
-                          <td className="px-4 py-2.5 text-right font-mono text-gold font-bold">{c.apex_speed_kmh.toFixed(1)}</td>
-                          <td className="px-4 py-2.5 text-right font-mono text-green">{c.exit_speed_kmh.toFixed(1)}</td>
-                          <td className={`px-4 py-2.5 text-right font-mono text-xs ${drop > 20 ? 'text-red' : drop > 10 ? 'text-orange' : 'text-gray-400'}`}>
+                          <td className="px-4 py-2.5 text-right font-mono text-blue-400">{entryMph.toFixed(1)}</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-gold font-bold">{apexMph.toFixed(1)}</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-green">{exitMph.toFixed(1)}</td>
+                          <td className={`px-4 py-2.5 text-right font-mono text-xs ${drop > 12 ? 'text-red' : drop > 6 ? 'text-orange' : 'text-gray-400'}`}>
                             -{drop.toFixed(1)}
                           </td>
                           <td className="px-4 py-2.5 text-right font-mono text-gray-500 text-xs">{c.entry_time_s.toFixed(2)}s</td>
@@ -311,7 +431,7 @@ export default function LapAnalysis() {
                   <div key={s.sector_num} className="bg-surface border border-border rounded-lg p-3 text-center space-y-1">
                     <div className="text-xs text-gray-400 uppercase tracking-wider">S{s.sector_num}</div>
                     <div className="text-xl font-bold font-mono text-accent">{s.time_s.toFixed(3)}</div>
-                    <div className="text-xs text-gray-400">Avg {s.avg_speed_kmh.toFixed(1)} km/h</div>
+                    <div className="text-xs text-gray-400">Avg {mphKmh(s.avg_speed_kmh).toFixed(1)} mph</div>
                     <div className="text-xs text-gray-600">{s.dist_start_m.toFixed(0)}–{s.dist_end_m.toFixed(0)} m</div>
                   </div>
                 ))}
@@ -322,9 +442,9 @@ export default function LapAnalysis() {
                   <BarChart data={sectorData} margin={{ top: 5, right: 10, bottom: 5, left: -10 }}>
                     <CartesianGrid stroke={CHART_STYLE.grid} strokeDasharray="3 3" />
                     <XAxis dataKey="name" stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }} />
-                    <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }} unit=" km/h" />
+                    <YAxis stroke={CHART_STYLE.axis} tick={{ fontSize: 10 }} unit=" mph" />
                     <Tooltip contentStyle={CHART_STYLE.tooltip}
-                      formatter={(v: any, name: string) => [`${(+v).toFixed(1)} km/h`, name]} />
+                      formatter={(v: any, name: string) => [`${(+v).toFixed(1)} mph`, name]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: '#888' }} />
                     <Bar dataKey="min"  name="Min"  fill="#FF4444" radius={[2,2,0,0]} />
                     <Bar dataKey="avg"  name="Avg"  fill="#00BFFF" radius={[2,2,0,0]} />

@@ -1,19 +1,54 @@
-import { useState, useRef, FormEvent, useEffect } from 'react'
+import { useState, useEffect, useRef, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Driver, Kart, Track } from '../api'
 import { JobProgress } from '../components/common/JobProgress'
 
-interface QueuedSession {
-  id: string
-  files: File[]
-  driverId: string
-  kartId: string
-  trackId: string
-  sessionType: string
-  date: string
-  jobId?: number
-  status: 'pending' | 'uploading' | 'processing' | 'done' | 'error'
-  error?: string
+interface FileEntry {
+  file: File
+  relativePath: string  // dedup key
+  folder: string        // display group name (the AiM session subfolder, e.g. a_0001_CSV)
+  displayPath: string   // sent to backend
+}
+
+/** Group AiM CSV files by their session subfolder.
+ *
+ * AiM exports look like:
+ *   day_folder / a_0001_CSV / GPS.csv        ← user picks day_folder  (depth 3)
+ *   a_0001_CSV / GPS.csv                     ← user picks a_0001_CSV  (depth 2)
+ *
+ * We group by the last directory component before the filename,
+ * so both cases produce folder = "a_0001_CSV".
+ */
+function groupFiles(selected: FileList): FileEntry[] {
+  return Array.from(selected)
+    .filter(f => /\.csv$/i.test(f.name))
+    .map(f => {
+      const rel: string = (f as any).webkitRelativePath || ''
+      const parts = rel ? rel.split('/') : []
+
+      let folder: string
+      let displayPath: string
+
+      if (parts.length >= 3) {
+        // Picked any ancestor folder: always extract session subfolder + filename
+        // so displayPath is always "sessionFolder/file.csv" (2 components).
+        // Using slice(1) was wrong when the user picks a grandparent — it left
+        // intermediate dirs in displayPath and broke backend grouping.
+        folder      = parts[parts.length - 2]                     // e.g. a_0001_CSV
+        displayPath = folder + '/' + parts[parts.length - 1]      // always session/file.csv
+      } else if (parts.length === 2) {
+        // Picked session folder directly: [session, file]
+        folder      = parts[0]
+        displayPath = rel
+      } else {
+        // Individual file with no path info
+        folder      = 'Files'
+        displayPath = f.name
+      }
+
+      return { file: f, relativePath: displayPath || f.name, folder, displayPath }
+    })
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath))
 }
 
 export default function SessionUpload() {
@@ -23,17 +58,14 @@ export default function SessionUpload() {
   const [driverId, setDriverId] = useState('')
   const [kartId, setKartId]     = useState('')
   const [trackId, setTrackId]   = useState('')
-  const [sessionType, setSessionType] = useState('Practice 1')
+  const [sessionType, setSessionType] = useState('Testing')
   const [date, setDate]         = useState(new Date().toISOString().slice(0, 10))
-  const [files, setFiles]       = useState<File[]>([])
+  const [entries, setEntries]   = useState<FileEntry[]>([])
   const [error, setError]       = useState('')
+  const [jobId, setJobId]       = useState<number | null>(null)
   const [loading, setLoading]   = useState(false)
-  const [queue, setQueue]       = useState<QueuedSession[]>([])
-  const [bulkMode, setBulkMode] = useState(false)
-  const [activeJob, setActiveJob] = useState<number | null>(null)
+  const [pickerKey, setPickerKey] = useState(0)  // bump to reset the <input> after each pick
 
-  const fileRef   = useRef<HTMLInputElement>(null)
-  const folderRef = useRef<HTMLInputElement>(null)
   const nav = useNavigate()
 
   useEffect(() => {
@@ -42,46 +74,63 @@ export default function SessionUpload() {
     api.get<Track[]>('/tracks').then(setTracks).catch(() => {})
   }, [])
 
-  // webkitdirectory must be set as a DOM attribute — not supported as a React prop
-  useEffect(() => {
-    const el = folderRef.current
-    if (!el) return
-    el.setAttribute('webkitdirectory', '')
-    el.setAttribute('directory', '')
-    el.setAttribute('multiple', '')
-  }, [])
-
-  const handleFiles = (selected: FileList | null) => {
-    if (!selected) return
-    const csvOnly = Array.from(selected).filter(f => /\.csv$/i.test(f.name))
-    if (csvOnly.length === 0) { setError('No CSV files found in the selection.'); return }
-    const sorted = csvOnly.sort((a, b) => a.name.localeCompare(b.name))
-    setFiles(sorted)
-    setError('')
-    if (sorted[0].lastModified)
-      setDate(new Date(sorted[0].lastModified).toISOString().slice(0, 10))
+  const handlePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) {
+      const newEntries = groupFiles(files)
+      if (newEntries.length > 0) {
+        setEntries(prev => {
+          const combined = [...prev, ...newEntries]
+          const seen = new Set<string>()
+          return combined.filter(en => seen.has(en.relativePath) ? false : (seen.add(en.relativePath), true))
+        })
+      }
+    }
+    setPickerKey(k => k + 1)  // fresh <input> so same folder can be re-picked
   }
 
-  const removeFile = (idx: number) => setFiles(f => f.filter((_, i) => i !== idx))
-
-  const submitSingle = async (e: FormEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
-    if (files.length === 0 || !driverId || !kartId || !trackId) {
-      setError('All fields are required — driver, kart, track, and at least one CSV file.')
+    if (e.dataTransfer.files.length > 0) {
+      const newEntries = groupFiles(e.dataTransfer.files)
+      if (newEntries.length > 0) {
+        setEntries(prev => {
+          const combined = [...prev, ...newEntries]
+          const seen = new Set<string>()
+          return combined.filter(en => seen.has(en.relativePath) ? false : (seen.add(en.relativePath), true))
+        })
+      }
+    }
+  }
+
+  const removeFolder = (folder: string) =>
+    setEntries(prev => prev.filter(e => e.folder !== folder))
+
+  const folders = [...new Set(entries.map(e => e.folder))]
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (entries.length === 0 || !driverId || !kartId || !trackId) {
+      setError('Driver, kart, track and at least one CSV folder are required.')
       return
     }
     setError('')
     setLoading(true)
+    const form = new FormData()
+    const relPaths: string[] = []
+    entries.forEach(entry => {
+      form.append('files', entry.file)
+      relPaths.push(entry.displayPath)
+    })
+    form.append('driver_id', driverId)
+    form.append('kart_id', kartId)
+    form.append('track_id', trackId)
+    form.append('session_type', sessionType)
+    form.append('date', date)
+    form.append('relative_paths', JSON.stringify(relPaths))
     try {
-      const form = new FormData()
-      files.forEach(f => form.append('files', f))
-      form.append('driver_id', driverId)
-      form.append('kart_id', kartId)
-      form.append('track_id', trackId)
-      form.append('session_type', sessionType)
-      form.append('date', date)
       const res = await api.upload<{ job_id: number }>('/sessions/upload', form)
-      setActiveJob(res.job_id)
+      setJobId(res.job_id)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -89,255 +138,178 @@ export default function SessionUpload() {
     }
   }
 
-  const addToQueue = () => {
-    if (files.length === 0 || !driverId || !kartId || !trackId) {
-      setError('Fill all fields and select files before adding to queue.')
-      return
-    }
-    setError('')
-    setQueue(prev => [...prev, {
-      id: `${Date.now()}-${Math.random()}`,
-      files: [...files], driverId, kartId, trackId, sessionType, date, status: 'pending',
-    }])
-    setFiles([])
-    if (fileRef.current)   fileRef.current.value = ''
-    if (folderRef.current) folderRef.current.value = ''
-  }
-
-  const removeFromQueue = (id: string) => setQueue(prev => prev.filter(q => q.id !== id))
-
-  const runQueue = async () => {
-    for (const item of queue.filter(q => q.status === 'pending')) {
-      setQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q))
-      try {
-        const form = new FormData()
-        item.files.forEach(f => form.append('files', f))
-        form.append('driver_id', item.driverId)
-        form.append('kart_id', item.kartId)
-        form.append('track_id', item.trackId)
-        form.append('session_type', item.sessionType)
-        form.append('date', item.date)
-        const res = await api.upload<{ job_id: number }>('/sessions/upload', form)
-        setQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'processing', jobId: res.job_id } : q))
-        await pollJobDone(res.job_id)
-        setQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'done' } : q))
-      } catch (err: any) {
-        setQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'error', error: err.message } : q))
-      }
-    }
-  }
-
-  const pollJobDone = (jobId: number): Promise<void> =>
-    new Promise((resolve, reject) => {
-      const t = setInterval(async () => {
-        try {
-          const job = await api.get<{ status: string; error_msg?: string }>(`/jobs/${jobId}`)
-          if (job.status === 'done')   { clearInterval(t); resolve() }
-          if (job.status === 'failed') { clearInterval(t); reject(new Error(job.error_msg ?? 'Job failed')) }
-        } catch { clearInterval(t); reject(new Error('Polling failed')) }
-      }, 2500)
-    })
-
-  const driverName = (id: string) => drivers.find(d => String(d.id) === id)?.name ?? `#${id}`
-  const kartName   = (id: string) => karts.find(k => String(k.id) === id)?.name ?? `#${id}`
-  const STATUS_COLOR: Record<string, string> = {
-    pending: 'text-gray-400', uploading: 'text-gold', processing: 'text-blue-400',
-    done: 'text-green', error: 'text-red',
-  }
-
-  if (activeJob) {
-    return (
-      <div className="max-w-lg space-y-4">
-        <h1 className="text-2xl font-bold text-white">Upload Session</h1>
-        <p className="text-gray-300 text-sm">Ingestion running — analysis, GPS reconstruction, and ML will complete automatically.</p>
-        <JobProgress jobId={activeJob} onDone={() => nav('/sessions')} />
-      </div>
-    )
-  }
-
-  const SelectField = ({ label, value, onChange, options }: {
-    label: string; value: string; onChange: (v: string) => void
-    options: { id: number; name: string }[]
-  }) => (
-    <div>
-      <label className="block text-xs text-gray-400 mb-1">{label} *</label>
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="w-full bg-surface border border-border rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-accent">
-        <option value="">Select {label.toLowerCase()}...</option>
-        {options.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-      </select>
-    </div>
-  )
+  const missingSetup = drivers.length === 0 || karts.length === 0 || tracks.length === 0
 
   return (
-    <div className="max-w-2xl space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Upload Session</h1>
-          <p className="text-xs text-gray-500 mt-0.5">One AiM session = one folder with up to 10 CSV channel files</p>
-        </div>
-        <button onClick={() => setBulkMode(b => !b)}
-          className={`text-xs px-3 py-1.5 border rounded transition-colors ${
-            bulkMode ? 'border-accent text-accent bg-accent bg-opacity-10' : 'border-border text-gray-400 hover:border-accent'
-          }`}>
-          {bulkMode ? '✓ Bulk Mode' : '+ Bulk Mode (18+ sessions)'}
-        </button>
+    <div className="max-w-lg space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-white">Upload Session</h1>
+        <p className="text-xs text-gray-500 mt-1">
+          Select your <span className="text-accent font-bold">day export folder</span> — all
+          session subfolders inside it are detected automatically.
+        </p>
       </div>
 
-      {bulkMode && (
-        <div className="bg-surface border border-accent border-opacity-30 rounded-lg p-3 text-xs text-gray-400 space-y-0.5">
-          <p className="text-white font-medium text-sm mb-1">Bulk Upload — queue multiple sessions</p>
-          <p>① Select folder → set driver/kart/track → <span className="text-accent font-bold">Add to Queue</span></p>
-          <p>② Repeat for each session folder (you have 18)</p>
-          <p>③ Click <span className="text-accent font-bold">Run All</span> — they process one by one automatically</p>
-        </div>
-      )}
+      {!jobId ? (
+        <form onSubmit={submit} className="space-y-4">
+          {error && (
+            <div className="text-red text-sm bg-red bg-opacity-10 border border-red rounded px-3 py-2">
+              {error}
+            </div>
+          )}
 
-      <div className="space-y-3">
-        {error && <div className="text-red text-xs bg-red bg-opacity-10 border border-red rounded px-3 py-2">{error}</div>}
+          {missingSetup && (
+            <div className="text-xs text-gold bg-gold bg-opacity-10 border border-gold rounded px-3 py-2">
+              You need at least one driver, kart, and track before uploading. Create them first.
+            </div>
+          )}
 
-        <div className="grid grid-cols-3 gap-3">
-          <SelectField label="Driver" value={driverId} onChange={setDriverId} options={drivers} />
-          <SelectField label="Kart"   value={kartId}   onChange={setKartId}   options={karts} />
-          <SelectField label="Track"  value={trackId}  onChange={setTrackId}  options={tracks} />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Session Type</label>
-            <select value={sessionType} onChange={e => setSessionType(e.target.value)}
-              className="w-full bg-surface border border-border rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-accent">
-              {['Practice 1','Practice 2','Qualifying','Race','Test'].map(t => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Driver *</label>
+              <select value={driverId} onChange={e => setDriverId(e.target.value)} required
+                className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent text-sm">
+                <option value="">Select...</option>
+                {drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Kart *</label>
+              <select value={kartId} onChange={e => setKartId(e.target.value)} required
+                className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent text-sm">
+                <option value="">Select...</option>
+                {karts.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Track *</label>
+              <select value={trackId} onChange={e => setTrackId(e.target.value)} required
+                className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent text-sm">
+                <option value="">Select...</option>
+                {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Session Type</label>
+              <select value={sessionType} onChange={e => setSessionType(e.target.value)}
+                className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent text-sm">
+                {['Testing', 'Sprint', 'Race', 'Practice', 'Qualifying'].map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
           </div>
+
           <div>
             <label className="block text-xs text-gray-400 mb-1">Date</label>
             <input type="date" value={date} onChange={e => setDate(e.target.value)}
-              className="w-full bg-surface border border-border rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-accent" />
+              className="w-full bg-surface border border-border rounded px-3 py-2 text-white focus:outline-none focus:border-accent text-sm" />
           </div>
-        </div>
 
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">
-            AiM CSV Files * <span className="text-gray-600">— all 10 files from one session folder</span>
-          </label>
-          <div
-            onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
-            className="border-2 border-dashed border-border rounded-lg px-4 py-6 text-center hover:border-accent transition-colors"
-          >
-            {files.length === 0 ? (
+          {/* ── Folder selector ── */}
+          <div className="space-y-3">
+            <div className="text-xs text-gray-400">
+              AiM Export Data *
+            </div>
+
+            {/* How-to hint */}
+            <div className="bg-surface border border-border rounded-lg px-4 py-3 text-xs text-gray-400 space-y-1">
+              <div className="text-white font-bold text-sm mb-1">How to select your data</div>
               <div>
-                <p className="text-gray-500 text-sm">Drag & drop session folder here</p>
-                <p className="text-gray-600 text-xs mt-1">or use the buttons below</p>
+                <span className="text-accent font-bold">Option A (recommended):</span>{' '}
+                Click the button below and select the <span className="font-mono text-white">day folder</span> that
+                contains all your <span className="font-mono text-white">a_0001_CSV</span>,{' '}
+                <span className="font-mono text-white">a_0002_CSV</span> … subfolders.
+                All sessions are detected automatically.
               </div>
-            ) : (
-              <p className="text-accent text-sm font-mono font-bold">
-                {files.length} CSV file{files.length !== 1 ? 's' : ''} ready
-              </p>
+              <div>
+                <span className="text-gray-500">Option B:</span>{' '}
+                Select a single <span className="font-mono">a_000X_CSV</span> folder directly.
+              </div>
+            </div>
+
+            {/* Drop zone + picker */}
+            <label
+              onDragOver={e => e.preventDefault()}
+              onDrop={handleDrop}
+              className="block border-2 border-dashed border-accent rounded-lg p-6 text-center
+                         hover:bg-accent hover:bg-opacity-5 transition-colors cursor-pointer"
+            >
+              {entries.length === 0 ? (
+                <div className="space-y-1">
+                  <div className="text-accent text-3xl">📂</div>
+                  <div className="text-accent font-bold text-sm">Click to select folder</div>
+                  <div className="text-gray-500 text-xs">or drag &amp; drop your AiM export folder here</div>
+                </div>
+              ) : (
+                <div className="text-accent text-sm font-bold">
+                  Click to replace / add more folders
+                </div>
+              )}
+              <input
+                key={`picker-${pickerKey}`}
+                type="file"
+                // @ts-ignore — webkitdirectory is non-standard
+                webkitdirectory=""
+                directory=""
+                multiple
+                className="sr-only"
+                onChange={handlePick}
+              />
+            </label>
+
+            {/* Detected session folders */}
+            {folders.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-xs text-gray-500 uppercase tracking-wider">
+                  Detected session folders ({folders.length})
+                </div>
+                {folders.map(folder => {
+                  const count = entries.filter(e => e.folder === folder).length
+                  return (
+                    <div key={folder}
+                      className="flex items-center justify-between bg-surface border border-border rounded px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-accent">📁</span>
+                        <div>
+                          <div className="text-white text-sm font-mono">{folder}</div>
+                          <div className="text-gray-500 text-xs">{count} CSV file{count !== 1 ? 's' : ''}</div>
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => removeFolder(folder)}
+                        className="text-gray-600 hover:text-red transition-colors text-sm ml-3">
+                        ✕
+                      </button>
+                    </div>
+                  )
+                })}
+                {entries.length > 0 && (
+                  <button type="button" onClick={() => setEntries([])}
+                    className="text-xs text-gray-600 hover:text-red transition-colors underline">
+                    Clear all
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
-          <div className="flex gap-2 mt-2">
-            <button type="button" onClick={() => fileRef.current?.click()}
-              className="flex-1 py-2.5 text-xs border border-border rounded hover:border-accent hover:text-accent transition-colors">
-              Browse Files
-              <span className="block text-gray-600 text-xs mt-0.5">select individual CSVs</span>
-            </button>
-            <button type="button" onClick={() => folderRef.current?.click()}
-              className="flex-1 py-2.5 text-xs border-2 border-accent text-accent rounded hover:bg-accent hover:bg-opacity-10 transition-colors font-medium">
-              Browse Folder
-              <span className="block text-gray-400 text-xs mt-0.5 font-normal">picks all CSVs in folder</span>
-            </button>
-          </div>
-
-          <input ref={fileRef} type="file" accept=".csv,.CSV" multiple className="hidden"
-            onChange={e => handleFiles(e.target.files)} />
-          {/* folderRef gets webkitdirectory set via useEffect */}
-          <input ref={folderRef} type="file" accept=".csv,.CSV" className="hidden"
-            onChange={e => handleFiles(e.target.files)} />
-
-          {files.length > 0 && (
-            <div className="mt-2 space-y-1 max-h-48 overflow-y-auto border border-border rounded p-1">
-              {files.map((f, i) => (
-                <div key={i} className="flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-surface">
-                  <span className="font-mono text-white truncate flex-1">{f.name}</span>
-                  <span className="text-gray-600 shrink-0">{(f.size / 1024).toFixed(0)} KB</span>
-                  <button type="button" onClick={() => removeFile(i)}
-                    className="text-gray-600 hover:text-red shrink-0">✕</button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {(drivers.length === 0 || karts.length === 0 || tracks.length === 0) && (
-          <div className="text-xs text-gold bg-gold bg-opacity-10 border border-gold rounded px-3 py-2">
-            Add at least one driver, kart, and track before uploading.
-          </div>
-        )}
-
-        <div className="flex gap-3">
-          {bulkMode ? (
-            <button type="button" onClick={addToQueue}
-              className="flex-1 py-2.5 bg-accent text-bg font-bold rounded hover:opacity-90 text-sm">
-              Add to Queue {queue.length > 0 && `(${queue.length} queued)`}
-            </button>
-          ) : (
-            <button type="button" onClick={submitSingle} disabled={loading}
-              className="flex-1 py-2.5 bg-accent text-bg font-bold rounded hover:opacity-90 disabled:opacity-50 text-sm">
-              {loading ? 'Uploading...' : files.length > 1 ? `Upload & Analyse (${files.length} files)` : 'Upload & Analyse'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Bulk queue panel */}
-      {bulkMode && queue.length > 0 && (
-        <div className="space-y-3 pt-3 border-t border-border">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-gray-300 uppercase tracking-wider">
-              Queue — {queue.filter(q => q.status === 'pending').length} pending / {queue.length} total
-            </h2>
-            <div className="flex gap-2">
-              <button onClick={runQueue}
-                disabled={!queue.some(q => q.status === 'pending')}
-                className="px-4 py-1.5 bg-accent text-bg text-xs font-bold rounded hover:opacity-90 disabled:opacity-50">
-                Run All
-              </button>
-              <button onClick={() => setQueue(q => q.filter(s => s.status !== 'pending'))}
-                className="px-3 py-1.5 border border-border text-xs rounded hover:border-red hover:text-red transition-colors">
-                Clear Pending
-              </button>
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            {queue.map(item => (
-              <div key={item.id} className="flex items-center gap-3 bg-surface border border-border rounded px-3 py-2 text-xs">
-                <span className={`font-bold uppercase shrink-0 w-20 ${STATUS_COLOR[item.status]}`}>
-                  {item.status}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <span className="text-white font-medium">{driverName(item.driverId)}</span>
-                  <span className="text-gray-600 mx-1">·</span>
-                  <span className="text-gray-400">{kartName(item.kartId)}</span>
-                  <span className="text-gray-600 mx-1">·</span>
-                  <span className="text-gray-400">{item.sessionType}</span>
-                  <span className="text-gray-600 mx-1">·</span>
-                  <span className="font-mono text-gray-500">{item.date}</span>
-                  <span className="text-gray-700 ml-2">({item.files.length} files)</span>
-                </div>
-                {item.error && <span className="text-red truncate max-w-xs">{item.error}</span>}
-                {item.status === 'done'    && <span className="text-green shrink-0">✓</span>}
-                {item.status === 'pending' && (
-                  <button onClick={() => removeFromQueue(item.id)}
-                    className="text-gray-600 hover:text-red shrink-0">✕</button>
-                )}
-              </div>
-            ))}
-          </div>
+          <button type="submit" disabled={loading || entries.length === 0 || missingSetup}
+            className="w-full py-3 bg-accent text-bg font-bold rounded hover:opacity-90 disabled:opacity-40 text-sm">
+            {loading
+              ? 'Uploading...'
+              : entries.length > 0
+              ? `Upload & Analyse — ${folders.length} session${folders.length !== 1 ? 's' : ''}, ${entries.length} files`
+              : 'Select a folder first'}
+          </button>
+        </form>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-gray-300 text-sm">
+            Ingestion in progress — analysing {entries.length} files across{' '}
+            {folders.length} session folder{folders.length !== 1 ? 's' : ''}.
+            GPS reconstruction, corner detection, and ML run automatically.
+          </p>
+          <JobProgress jobId={jobId} onDone={() => nav('/sessions')} />
         </div>
       )}
     </div>

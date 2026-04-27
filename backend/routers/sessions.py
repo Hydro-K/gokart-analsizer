@@ -76,6 +76,7 @@ def upload_session(
     date: Optional[str] = Form(None),
     session_type: str = Form("Practice 1"),
     notes: str = Form(""),
+    relative_paths: Optional[str] = Form(None),  # JSON array of webkitRelativePath strings
     db: sqlite3.Connection = Depends(get_db),
     _=Depends(require_engineer),
 ):
@@ -90,14 +91,26 @@ def upload_session(
     if not files:
         raise HTTPException(400, "At least one CSV file is required.")
 
+    # Parse relative paths for multi-folder grouping
+    rel_paths: list[str] = []
+    if relative_paths:
+        try:
+            rel_paths = json.loads(relative_paths)
+        except Exception:
+            rel_paths = []
+
     # Save all uploaded files and collect paths
     saved_paths: list[str] = []
-    for upload in files:
-        safe_name = f"{uuid.uuid4().hex}_{Path(upload.filename or 'session.csv').name}"
+    saved_rel: list[str] = []
+    for i, upload in enumerate(files):
+        orig_name = Path(upload.filename or 'session.csv').name
+        safe_name = f"{uuid.uuid4().hex}_{orig_name}"
         dest = cfg.UPLOAD_DIR / safe_name
         with open(dest, "wb") as fh:
             shutil.copyfileobj(upload.file, fh)
         saved_paths.append(str(dest))
+        rel = rel_paths[i] if i < len(rel_paths) else orig_name
+        saved_rel.append(rel)
 
     # Create session record (primary file = first saved path)
     cur = db.execute(
@@ -107,10 +120,14 @@ def upload_session(
     )
     session_id = cur.lastrowid
 
-    # Queue ingestion job with all file paths for stitching
+    payload = {
+        "session_id": session_id,
+        "file_paths": saved_paths,
+        "relative_paths": saved_rel,
+    }
     job_cur = db.execute(
         "INSERT INTO jobs(type, priority, payload_json) VALUES(?,?,?)",
-        ("ingest_csv", 1, json.dumps({"session_id": session_id, "file_paths": saved_paths})),
+        ("ingest_csv", 1, json.dumps(payload)),
     )
     return {"session_id": session_id, "job_id": job_cur.lastrowid, "message": f"Upload received ({len(saved_paths)} file(s)), processing queued"}
 
@@ -276,8 +293,8 @@ def session_recommendations(session_id: int, db: sqlite3.Connection = Depends(ge
     except Exception:
         gear = GearRatioConfig()
 
-    engine = RecommendationEngine()
-    recs = engine.generate(session_analysis, settings, gear)
+    engine = RecommendationEngine(session_analysis, settings, gear)
+    recs = engine.generate()
     return [RecommendationOut(
         category=r.category,
         setting_key=r.setting_key,
@@ -285,6 +302,62 @@ def session_recommendations(session_id: int, db: sqlite3.Connection = Depends(ge
         recommended_value=r.recommended_value,
         delta=r.delta,
         reason=r.reason,
-        predicted_outcome=getattr(r, "predicted_outcome", r.reason),
+        predicted_outcome=getattr(r, "what_will_happen", r.reason),
         priority=r.priority,
     ) for r in recs]
+
+
+# ── Tire Pressure Logs ────────────────────────────────────────────────────────
+
+@router.post("/{session_id}/tire-logs")
+def add_tire_log(
+    session_id: int,
+    payload: dict,
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    if not db.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone():
+        raise HTTPException(404, "Session not found")
+    cur = db.execute(
+        """INSERT INTO tire_pressure_logs
+           (session_id, recorded_at, fl_psi, fr_psi, rl_psi, rr_psi,
+            fl_temp_f, fr_temp_f, rl_temp_f, rr_temp_f, notes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            session_id,
+            payload.get("recorded_at", ""),
+            payload.get("fl_psi"), payload.get("fr_psi"),
+            payload.get("rl_psi"), payload.get("rr_psi"),
+            payload.get("fl_temp_f"), payload.get("fr_temp_f"),
+            payload.get("rl_temp_f"), payload.get("rr_temp_f"),
+            payload.get("notes", ""),
+        ),
+    )
+    return {"id": cur.lastrowid, "session_id": session_id}
+
+
+@router.get("/{session_id}/tire-logs")
+def list_tire_logs(
+    session_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    rows = db.execute(
+        "SELECT * FROM tire_pressure_logs WHERE session_id=? ORDER BY created_at ASC",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.delete("/{session_id}/tire-logs/{log_id}")
+def delete_tire_log(
+    session_id: int,
+    log_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    db.execute(
+        "DELETE FROM tire_pressure_logs WHERE id=? AND session_id=?",
+        (log_id, session_id),
+    )
+    return {"ok": True}

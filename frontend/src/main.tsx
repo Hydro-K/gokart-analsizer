@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './index.css'
+import 'leaflet/dist/leaflet.css'
 
 import { AppShell } from './components/layout/AppShell'
 import Login from './pages/Login'
@@ -22,6 +23,7 @@ import Settings from './pages/Settings'
 import ML from './pages/ML'
 import Compare from './pages/Compare'
 import PiGuide from './pages/PiGuide'
+import LapReplay from './pages/LapReplay'
 import { api, SystemStatus } from './api'
 
 function AppRouter() {
@@ -73,6 +75,8 @@ function AppRouter() {
         <Route path="/settings"      element={<Settings />} />
         <Route path="*"              element={<Navigate to="/" replace />} />
       </Route>
+      {/* Full-screen, outside AppShell */}
+      <Route path="/replay/:lapId"  element={<LapReplay />} />
     </Routes>
   )
 }

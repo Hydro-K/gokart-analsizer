@@ -56,7 +56,7 @@ def _lttb_downsample(x: list, y: list, threshold: int):
 @router.get("/{lap_id}", response_model=LapOut)
 def get_lap(lap_id: int, db: sqlite3.Connection = Depends(get_db), _=Depends(get_current_user)):
     row = _get_lap_or_404(lap_id, db)
-    return LapOut(**dict(row), is_valid=bool(row["is_valid"]))
+    return LapOut(**{**dict(row), 'is_valid': bool(row["is_valid"])})
 
 
 @router.get("/{lap_id}/telemetry", response_model=LapTelemetryOut)
@@ -77,9 +77,10 @@ def get_telemetry(
     phase_data = json.loads(row["phase_json"]) if row["phase_json"] else None
 
     if points and len(time_data) > points:
-        time_data, speed_data = _lttb_downsample(time_data, speed_data, points)
-        if lat_data:  _, lat_data  = _lttb_downsample(time_data, lat_data,  points)
-        if lon_data:  _, lon_data  = _lttb_downsample(time_data, lon_data,  points)
+        orig_time = time_data  # keep for lat/lon/phase downsampling (must match original length)
+        time_data, speed_data = _lttb_downsample(orig_time, speed_data, points)
+        if lat_data:  _, lat_data  = _lttb_downsample(orig_time, lat_data,  points)
+        if lon_data:  _, lon_data  = _lttb_downsample(orig_time, lon_data,  points)
         if phase_data:
             idxs = np.round(np.linspace(0, len(phase_data)-1, points)).astype(int).tolist()
             phase_data = [phase_data[i] for i in idxs]
@@ -101,14 +102,10 @@ def get_corners(lap_id: int, db: sqlite3.Connection = Depends(get_db), _=Depends
     row = db.execute("SELECT * FROM lap_telemetry WHERE lap_id=?", (lap_id,)).fetchone()
     if not row:
         raise HTTPException(404, "No telemetry data")
-    from backend.analysis.lap_analyzer import LapData
     from backend.analysis.corner_detector import detect_corners
     time_arr  = np.array(json.loads(row["time_json"]))
     speed_arr = np.array(json.loads(row["speed_json"]))
-    lap = LapData(lap_number=0, start_idx=0, end_idx=len(time_arr)-1,
-                  lap_time=float(time_arr[-1]-time_arr[0]) if len(time_arr) > 1 else 0,
-                  time=time_arr, speed=speed_arr)
-    corners = detect_corners(lap)
+    corners = detect_corners(time_arr, speed_arr)
     return [CornerOut(
         corner_index=i+1,
         entry_speed_kmh=round(c.entry_speed * 3.6, 1),

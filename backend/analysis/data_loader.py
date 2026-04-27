@@ -274,14 +274,14 @@ def load_aim_csv(filepath: str) -> RawSessionData:
     # ---- 7. Unit detection for speed -------------------------------
     speed_max = float(np.nanmax(speed_raw))
     if speed_max > 300:
-        # mph
+        # mph (e.g. 40–80 mph)
         speed_ms = speed_raw * 0.44704
         warnings.append(f"Speed channel max {speed_max:.0f} — interpreted as mph.")
-    elif speed_max > 8:
-        # km/h (AiM default)
+    elif speed_max > 25:
+        # km/h — AiM Race Studio combined log exports GPS Speed in km/h
         speed_ms = speed_raw / 3.6
     else:
-        # already m/s
+        # m/s — AiM Solo 2 individual _GPS.csv exports speed in m/s (max ~20 m/s)
         speed_ms = speed_raw
         warnings.append(f"Speed channel max {speed_max:.2f} — interpreted as m/s.")
 
@@ -397,27 +397,109 @@ def _load_single_channel(filepath: str, base_time: np.ndarray) -> Optional[np.nd
         return None
 
 
-def _load_laps_and_splits(filepath: str) -> Optional[np.ndarray]:
-    """Extract lap timestamps from an AiM _laps_and_splits.csv."""
+def _parse_aim_time(s: str) -> Optional[float]:
+    """Parse AiM time string to seconds.
+
+    Handles:
+      '1:15.234'       → 75.234  (MM:SS.mmm — most common AiM export format)
+      '0:01:15.234'    → 75.234  (HH:MM:SS.mmm)
+      '75.234'         → 75.234  (plain seconds)
+      '75234'          → 75.234  (milliseconds, value > 1000)
+    """
+    s = str(s).strip().strip('"')
+    if not s or s.lower() in ("nan", "none", ""):
+        return None
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            if len(parts) == 2:
+                return float(parts[0]) * 60.0 + float(parts[1])
+            if len(parts) == 3:
+                return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
+        except ValueError:
+            return None
     try:
-        row = _find_header_row(filepath)
-        df = pd.read_csv(filepath, skiprows=range(row), header=0,
-                         on_bad_lines="skip", encoding_errors="replace", dtype=str)
-        df.columns = [str(c).strip().strip('"') for c in df.columns]
-        if len(df) > 0 and _is_unit_row(df.iloc[0]):
-            df = df.iloc[1:].reset_index(drop=True)
-        df.replace("", np.nan, inplace=True)
-        df.dropna(how="all", inplace=True)
-        df = df.apply(pd.to_numeric, errors="coerce")
-        # Return array of lap start times
-        for col in df.columns:
-            norm = _norm(col)
-            if any(kw in norm for kw in ["time", "start", "lap"]):
-                arr = df[col].dropna().to_numpy(dtype=float)
-                if len(arr) > 0:
-                    if arr[0] > 500:
-                        arr /= 1000.0
-                    return arr
+        v = float(s)
+        return v / 1000.0 if v > 1000 else v
+    except ValueError:
+        return None
+
+
+def _load_laps_and_splits(filepath: str) -> Optional[np.ndarray]:
+    """Extract lap-crossing timestamps (seconds from session start) from an AiM _laps_and_splits.csv.
+
+    AiM Race Studio 3 exports lap times in MM:SS.mmm format (e.g. '1:15.234').
+    The standard pd.to_numeric coercion silently turns these into NaN, causing
+    the parser to return None and the fall-back speed-based detector to run —
+    which gives wildly wrong lap counts.  This version parses time strings
+    explicitly before any numeric coercion.
+
+    The file typically contains lap DURATIONS (one row per lap).  We convert
+    those to cumulative session timestamps so they can be used as beacon positions:
+        [45.3, 44.8, 46.1]  →  [45.3, 90.1, 136.2]  (seconds from t=0)
+    """
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            raw_lines = f.readlines()
+
+        # Find header row
+        header_row = _find_header_row(filepath)
+        lines = raw_lines[header_row:]
+        if not lines:
+            return None
+
+        import csv, io
+        reader = csv.reader(io.StringIO("".join(lines)))
+        headers = [h.strip().strip('"') for h in next(reader)]
+
+        # Identify the lap-time column: first non-index column with time-like values
+        _SKIP_NORM = {"lap", "run", "split", "#", "no", "num", "number"}
+        _TIME_PRIORITY = ["time", "laptime", "lap time", "duration", "start", "elapsed"]
+
+        # Read all rows
+        rows = list(reader)
+        if not rows:
+            return None
+
+        # Try each column; parse with _parse_aim_time
+        col_data: dict[str, list] = {h: [] for h in headers}
+        for row in rows:
+            for i, h in enumerate(headers):
+                val = row[i].strip() if i < len(row) else ""
+                col_data[h].append(val)
+
+        # Score columns by keyword priority
+        def col_score(h: str) -> int:
+            n = _norm(h)
+            if n in _SKIP_NORM:
+                return -1
+            for pri, kw in enumerate(_TIME_PRIORITY):
+                if kw in n or n.startswith(kw):
+                    return len(_TIME_PRIORITY) - pri
+            return 0
+
+        ranked = sorted(headers, key=col_score, reverse=True)
+
+        for col in ranked:
+            if col_score(col) < 0:
+                continue
+            parsed = [_parse_aim_time(v) for v in col_data[col]]
+            valid = [v for v in parsed if v is not None and v > 0]
+            if len(valid) < 1:
+                continue
+
+            durations = np.array(valid, dtype=float)
+
+            # Distinguish lap durations from cumulative timestamps:
+            # If values are monotonically increasing → already cumulative (start times)
+            # If values are all similar in magnitude (cv < 30%) → lap durations
+            if len(durations) > 1 and np.all(np.diff(durations) > 0):
+                # Already cumulative start times — use as-is
+                return durations
+            else:
+                # Lap durations → convert to cumulative (lap-end = next lap-start)
+                return np.cumsum(durations)
+
     except Exception:
         pass
     return None

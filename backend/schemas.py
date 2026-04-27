@@ -285,7 +285,7 @@ class CompetitionRulesUpdate(BaseModel):
 # ── Simulation ────────────────────────────────────────────────────────────────
 
 class SimInputA(BaseModel):
-    session_id: int
+    session_id: Optional[int] = None
     lap_id: int
     max_current: int = 180
     accel_rate: int = 64

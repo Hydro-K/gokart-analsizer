@@ -24,6 +24,9 @@ export interface Telemetry {
   lon?: number[] | null
   phase?: string[] | null
   has_gps: boolean
+  lateral_acc?: number[] | null   // G
+  inline_acc?:  number[] | null   // G
+  yaw_rate?:    number[] | null   // deg/s
 }
 
 export interface EnergyResult {

@@ -66,7 +66,7 @@ app.add_middleware(
 from backend.routers import (
     auth, users, drivers, karts, tracks,
     sessions, laps, compliance, jobs,
-    simulation, ml, storage, export,
+    simulation, ml, storage, export, reports,
 )
 
 app.include_router(auth.router,        prefix="/api/auth",        tags=["auth"])
@@ -82,6 +82,7 @@ app.include_router(simulation.router,  prefix="/api/simulation",  tags=["simulat
 app.include_router(ml.router,          prefix="/api/ml",          tags=["ml"])
 app.include_router(storage.router,     prefix="/api/storage",     tags=["storage"])
 app.include_router(export.router,      prefix="/api/export",      tags=["export"])
+app.include_router(reports.router,     prefix="/api/reports",     tags=["reports"])
 
 
 @app.get("/api/benchmarks")

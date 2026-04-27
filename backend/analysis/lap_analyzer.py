@@ -107,15 +107,40 @@ def compute_phases(time: np.ndarray, speed: np.ndarray) -> np.ndarray:
 
 
 def _detect_laps_beacon(time: np.ndarray, beacon: np.ndarray) -> List[tuple]:
-    """Return list of (start_idx, end_idx) from beacon pulses."""
-    # Prepend 0 so a beacon pulse at sample-0 creates a rising edge
+    """Return list of (start_idx, end_idx) from beacon pulses.
+
+    AiM beacon fires at the start/finish line crossing — both the END of the
+    current lap and the START of the next one.  The loop between consecutive
+    edges captures laps 2..N, but lap 1 (from t=0 to the first crossing) is
+    always dropped by the naive range(len-1) loop.  We add it back here if
+    its duration is plausible (≥ 60 % of the median inter-beacon interval).
+    """
     padded = np.concatenate([[0], beacon.astype(int)])
     edges = np.where(np.diff(padded) > 0)[0]
     if len(edges) < 2:
         return []
-    laps = []
+
+    # Core segments: between consecutive beacon edges
+    laps: List[tuple] = []
     for i in range(len(edges) - 1):
         laps.append((int(edges[i]), int(edges[i + 1]) - 1))
+
+    if not laps:
+        return [(0, len(time) - 1)]
+
+    median_lap_t = float(np.median([time[e] - time[s] for s, e in laps]))
+
+    # Prepend the first lap if [0 → first_edge] is ≥ 60% of a typical lap
+    first_seg_t = float(time[edges[0]] - time[0])
+    if first_seg_t >= median_lap_t * 0.6:
+        laps.insert(0, (0, int(edges[0]) - 1))
+
+    # Append the final lap if [last_edge → end] is ≥ 60% of a typical lap
+    # (handles loggers that fire a beacon at the START of each lap instead)
+    last_seg_t = float(time[-1] - time[edges[-1]])
+    if last_seg_t >= median_lap_t * 0.6:
+        laps.append((int(edges[-1]), len(time) - 1))
+
     return laps
 
 
@@ -157,6 +182,14 @@ def _detect_laps_speed(time: np.ndarray, speed: np.ndarray) -> List[tuple]:
     laps = []
     for i in range(len(lap_edges) - 1):
         laps.append((lap_edges[i], lap_edges[i + 1]))
+
+    # Include the tail segment if it looks like a full lap
+    if laps:
+        median_lap_t = float(np.median([time[e] - time[s] for s, e in laps]))
+        tail_t = float(time[-1] - time[lap_edges[-1]])
+        if tail_t >= median_lap_t * 0.6:
+            laps.append((lap_edges[-1], len(time) - 1))
+
     return laps
 
 
@@ -177,7 +210,7 @@ def analyse_session(
     if not lap_bounds:
         lap_bounds = [(0, len(time) - 1)]
 
-    laps: List[LapData] = []
+    raw_laps: List[LapData] = []
     for i, (s, e) in enumerate(lap_bounds):
         t_lap = time[s:e + 1]
         v_lap = speed[s:e + 1]
@@ -202,7 +235,29 @@ def analyse_session(
         )
         from backend.analysis.corner_detector import detect_corners
         ld.corners = detect_corners(ld.time, ld.speed)
-        laps.append(ld)
+        raw_laps.append(ld)
+
+    # Dynamic outlier filter: removes inter-session transition fragments and
+    # very long out-lap sessions that aren't real racing laps.
+    # Uses IQR on the lower end so partial out-laps (e.g. 24s when typical is 37s)
+    # are excluded, keeping genuinely slow laps (spins, traffic) on the upper end.
+    laps: List[LapData] = raw_laps
+    if len(raw_laps) >= 4:
+        lap_times_arr = np.array([l.lap_time for l in raw_laps])
+        median_t = float(np.median(lap_times_arr))
+        q1 = float(np.percentile(lap_times_arr, 25))
+        q3 = float(np.percentile(lap_times_arr, 75))
+        iqr = q3 - q1 if q3 > q1 else median_t * 0.2
+        # Lower fence: IQR method but never below 40% of median
+        lo_cut = max(median_t * 0.40, q1 - 1.5 * iqr)
+        # Upper fence: generous — 8× median removes multi-hour out-lap sessions
+        hi_cut = median_t * 8.0
+        filtered = [l for l in raw_laps if lo_cut <= l.lap_time <= hi_cut]
+        laps = filtered if filtered else raw_laps  # fallback: keep all
+
+    # Re-number laps sequentially after filtering
+    for idx, l in enumerate(laps):
+        l.lap_number = idx + 1
 
     if not laps:
         # Treat entire recording as one lap

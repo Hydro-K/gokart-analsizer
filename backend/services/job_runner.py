@@ -96,12 +96,13 @@ def _handle_ingest(payload: dict) -> dict:
     from backend.services.ingestion import ingest_csv, ingest_csv_files
     conn = create_connection()
     try:
-        # Support both legacy single file_path and new multi-file file_paths
         file_paths = payload.get("file_paths") or [payload["file_path"]]
+        relative_paths = payload.get("relative_paths") or []
         if len(file_paths) == 1:
             result = ingest_csv(payload["session_id"], file_paths[0], conn)
         else:
-            result = ingest_csv_files(payload["session_id"], file_paths, conn)
+            result = ingest_csv_files(payload["session_id"], file_paths, conn,
+                                      relative_paths=relative_paths)
         conn.commit()
         return result
     finally:
@@ -143,7 +144,7 @@ def _handle_sim_c(payload: dict) -> dict:
         import backend.config as cfg
         max_c = min(payload.get("max_current", 180), cfg.MAX_CURRENT_HARD_LIMIT)
         settings = AlltraxSettings(max_current=max_c, accel_rate=payload.get("accel_rate", 64))
-        gear = GearRatioConfig(gear_ratio=payload.get("gear_ratio", 5.0))
+        gear = GearRatioConfig()  # uses sprocket tooth defaults; ratio derived via .ratio property
         vehicle = VehicleConfig(kart_mass_kg=payload.get("mass_kg", 115.0))
         result = simulate_mode_c(
             lap=lap, settings=settings, gear=gear, vehicle=vehicle,
