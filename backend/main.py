@@ -68,6 +68,7 @@ from backend.routers import (
     sessions, laps, compliance, jobs,
     simulation, ml, storage, export, reports,
 )
+from backend.routers import maintenance, checklists
 
 app.include_router(auth.router,        prefix="/api/auth",        tags=["auth"])
 app.include_router(users.router,       prefix="/api/users",       tags=["users"])
@@ -83,6 +84,8 @@ app.include_router(ml.router,          prefix="/api/ml",          tags=["ml"])
 app.include_router(storage.router,     prefix="/api/storage",     tags=["storage"])
 app.include_router(export.router,      prefix="/api/export",      tags=["export"])
 app.include_router(reports.router,     prefix="/api/reports",     tags=["reports"])
+app.include_router(maintenance.router, prefix="/api",             tags=["maintenance"])
+app.include_router(checklists.router,  prefix="/api/checklists",  tags=["checklists"])
 
 
 @app.get("/api/benchmarks")

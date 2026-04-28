@@ -64,6 +64,8 @@ export default function LapAnalysis() {
   const [smooth, setSmooth]     = useState<SmoothnessResult | null>(null)
   const [feats, setFeats]       = useState<FeatureVector | null>(null)
   const [activeTab, setActiveTab] = useState<'trace'|'gforce'|'corners'|'sectors'|'energy'|'features'>('trace')
+  const [heatmapRows, setHeatmapRows] = useState<{ lapNum: number; lapId: number; times: number[] }[]>([])
+  const [heatmapBest, setHeatmapBest] = useState<number[]>([])
 
   useEffect(() => {
     if (!id) return
@@ -75,6 +77,27 @@ export default function LapAnalysis() {
     api.get<SmoothnessResult>(`/laps/${id}/smoothness`).then(setSmooth).catch(() => {})
     api.get<FeatureVector>(`/laps/${id}/features`).then(setFeats).catch(() => {})
   }, [id])
+
+  // Load sector heatmap when tab opens and we have the lap's session_id
+  useEffect(() => {
+    if (activeTab !== 'sectors' || !lap) return
+    if (heatmapRows.length > 0) return  // already loaded
+    const sessionId = (lap as any).session_id
+    if (!sessionId) return
+    api.get<Lap[]>(`/sessions/${sessionId}/laps`).then(async (sessionLaps) => {
+      const validLaps = sessionLaps.filter(l => l.is_valid).slice(0, 12)
+      const rows = await Promise.all(validLaps.map(async (l) => {
+        const secs = await api.get<SectorOut[]>(`/laps/${l.id}/sectors?n=5`).catch(() => [] as SectorOut[])
+        return { lapNum: l.lap_number, lapId: l.id, times: secs.map(s => s.time_s) }
+      }))
+      const filled = rows.filter(r => r.times.length === 5)
+      setHeatmapRows(filled)
+      if (filled.length > 0) {
+        const best = Array.from({ length: 5 }, (_, si) => Math.min(...filled.map(r => r.times[si])))
+        setHeatmapBest(best)
+      }
+    }).catch(() => {})
+  }, [activeTab, lap])
 
   // Build speed trace data with phase color (display in mph)
   const traceData = tele
@@ -436,6 +459,59 @@ export default function LapAnalysis() {
                   </div>
                 ))}
               </div>
+              {heatmapRows.length > 1 && (
+                <div className="bg-surface border border-border rounded-lg p-4 overflow-x-auto">
+                  <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-3">Sector Heatmap — All Laps</h3>
+                  <table className="w-full text-xs font-mono">
+                    <thead>
+                      <tr className="text-gray-400">
+                        <th className="text-left pr-3 py-1">Lap</th>
+                        {[1,2,3,4,5].map(n => <th key={n} className="text-center px-2 py-1">S{n}</th>)}
+                        <th className="text-right pl-3 py-1">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {heatmapRows.map(row => {
+                        const total = row.times.reduce((a, b) => a + b, 0)
+                        return (
+                          <tr key={row.lapId} className={row.lapId === parseInt(id!) ? 'ring-1 ring-accent' : ''}>
+                            <td className="pr-3 py-1 text-gray-300">L{row.lapNum}</td>
+                            {row.times.map((t, si) => {
+                              const best = heatmapBest[si] ?? t
+                              const pct = best > 0 ? (t - best) / best : 0
+                              const bg = pct < 0.005 ? '#00FF8822'
+                                : pct < 0.02 ? '#FFD70022'
+                                : '#FF444422'
+                              const col = pct < 0.005 ? '#00FF88'
+                                : pct < 0.02 ? '#FFD700'
+                                : '#FF4444'
+                              return (
+                                <td key={si} className="text-center px-2 py-1 rounded font-bold" style={{ color: col, background: bg }}>
+                                  {t.toFixed(3)}
+                                </td>
+                              )
+                            })}
+                            <td className="text-right pl-3 py-1 text-white">{total.toFixed(3)}</td>
+                          </tr>
+                        )
+                      })}
+                      {heatmapBest.length === 5 && (
+                        <tr className="border-t border-border">
+                          <td className="pr-3 py-1 text-accent font-bold">BEST</td>
+                          {heatmapBest.map((b, i) => (
+                            <td key={i} className="text-center px-2 py-1 text-green-400 font-bold">{b.toFixed(3)}</td>
+                          ))}
+                          <td className="text-right pl-3 py-1 text-green-400 font-bold">
+                            {heatmapBest.reduce((a, b) => a + b, 0).toFixed(3)}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                  <p className="text-xs text-gray-600 mt-2">Green = fastest in session · Yellow = &lt;2% off · Red = &gt;2% off</p>
+                </div>
+              )}
+
               <div className="bg-surface border border-border rounded-lg p-4 h-56">
                 <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-3">Speed Range by Sector</h3>
                 <ResponsiveContainer width="100%" height="85%">
@@ -473,7 +549,7 @@ export default function LapAnalysis() {
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 <MetricCard label="Regen Recovered" value={energy.regen_kwh.toFixed(4)}         unit="kWh" />
                 <MetricCard label="Laps/Charge"     value={energy.laps_per_charge.toFixed(1)}   unit="laps" />
-                <MetricCard label="Est. Range"      value={energy.estimated_range_km.toFixed(1)} unit="km" />
+                <MetricCard label="Est. Range"      value={(energy.estimated_range_km * 0.621371).toFixed(1)} unit="mi" />
               </div>
               <div className="bg-surface border border-border rounded-lg p-4 text-sm text-gray-300 space-y-2">
                 <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Analysis</h3>

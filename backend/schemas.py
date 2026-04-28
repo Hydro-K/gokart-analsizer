@@ -165,6 +165,7 @@ class LapOut(BaseModel):
     lap_time_s: float
     is_valid: bool
     created_at: str
+    recorded_at: Optional[str] = None
 
 class LapTelemetryOut(BaseModel):
     lap_id: int
@@ -285,7 +286,7 @@ class CompetitionRulesUpdate(BaseModel):
 # ── Simulation ────────────────────────────────────────────────────────────────
 
 class SimInputA(BaseModel):
-    session_id: Optional[int] = None
+    session_id: int
     lap_id: int
     max_current: int = 180
     accel_rate: int = 64

@@ -41,14 +41,25 @@ def _ingest_raw(session_id: int, raw, db: sqlite3.Connection) -> dict:
     kart_id   = sess_row["kart_id"]
     track_id  = sess_row["track_id"]
 
+    import datetime as _dt
+    session_start_dt = getattr(raw, "session_start_dt", None)
+
     lap_ids = []
     # 2. Persist laps + telemetry
     for lap in session_analysis.laps:
+        # Compute wall-clock time of this lap's start from CSV metadata
+        recorded_at = None
+        if session_start_dt and hasattr(lap, "abs_start_s"):
+            try:
+                recorded_at = (session_start_dt + _dt.timedelta(seconds=lap.abs_start_s)).strftime("%Y-%m-%dT%H:%M:%S")
+            except Exception:
+                pass
+
         cur = db.execute(
-            "INSERT INTO laps(session_id, driver_id, kart_id, track_id, lap_number, lap_time_s, is_valid) "
-            "VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO laps(session_id, driver_id, kart_id, track_id, lap_number, lap_time_s, is_valid, recorded_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             (session_id, driver_id, kart_id, track_id,
-             lap.lap_number, float(lap.lap_time), 1),
+             lap.lap_number, float(lap.lap_time), 1, recorded_at),
         )
         lap_id = cur.lastrowid
         lap_ids.append(lap_id)
@@ -202,87 +213,85 @@ def _stitch_raw_sessions(raws: list) -> "RawSessionData":
     )
 
 
-def ingest_csv_files(session_id: int, file_paths: list, db: sqlite3.Connection,
-                     relative_paths: Optional[list] = None) -> dict:
-    """Ingest multiple CSV files.
-
-    If relative_paths contains folder prefixes (e.g. 'a_0001_CSV/_GPS.csv'),
-    files are grouped by their top-level folder and each group is loaded as an
-    AiM session folder, then all groups are stitched chronologically into one
-    session — supporting upload of multiple AiM session runs at once.
-    """
+def ingest_csv_files(session_id: int, file_paths: list, db: sqlite3.Connection) -> dict:
+    """Ingest multiple CSV files. Detects AiM session folders automatically."""
     from backend.analysis.data_loader import load_aim_csv, load_aim_folder
-    import tempfile, shutil as _shutil
 
-    rel = relative_paths or []
-
+    # Detect AiM session folder: 4+ files whose names contain AiM channel keywords
     aim_keywords = {"gps", "laps", "lateralacc", "inlineacc", "yawrate",
                     "rollrate", "pitchrate", "verticalacc", "battery"}
+    names = [Path(fp).stem.lower().replace(" ", "").replace("_", "") for fp in file_paths]
+    aim_channel_count = sum(
+        1 for n in names if any(kw in n for kw in aim_keywords)
+    )
+    is_aim_folder = aim_channel_count >= 3
 
-    def _is_aim_group(paths: list) -> bool:
-        names = [Path(fp).stem.lower().replace(" ", "").replace("_", "") for fp in paths]
-        return sum(1 for n in names if any(kw in n for kw in aim_keywords)) >= 3
-
-    def _load_group_as_aim(paths: list, folder_label: str):
-        """Copy files to a temp dir (restoring original names) and load as AiM folder."""
-        tmp = Path(tempfile.mkdtemp(prefix="stratos_aim_"))
+    if is_aim_folder:
+        # Save all files to a temp folder and use folder loader
+        from pathlib import Path as _P
+        import tempfile, shutil
+        tmp = _P(tempfile.mkdtemp(prefix="stratos_aim_"))
         try:
-            for fp in paths:
-                orig = Path(fp).name
-                # Strip uuid_ prefix to restore the original AiM filename
-                parts = orig.split("_", 1)
-                dest_name = parts[1] if len(parts) == 2 and len(parts[0]) == 32 else orig
-                _shutil.copy2(fp, tmp / dest_name)
+            for fp in file_paths:
+                shutil.copy2(fp, tmp / _P(fp).name)
             raw = load_aim_folder(str(tmp))
-            raw.warnings.append(f"Loaded AiM folder '{folder_label}' ({len(paths)} files)")
-            return raw
+            raw.warnings.append(f"Loaded as AiM session folder ({len(file_paths)} channel files)")
         finally:
-            _shutil.rmtree(tmp, ignore_errors=True)
-
-    # Group files by source folder using relative paths
-    folder_groups: dict[str, list] = {}
-    has_folders = False
-    for i, fp in enumerate(file_paths):
-        rel_path = (rel[i] if i < len(rel) else "").replace("\\", "/")
-        parts = rel_path.split("/")
-        folder = parts[0] if len(parts) > 1 else ""
-        if folder:
-            has_folders = True
-        folder_groups.setdefault(folder, []).append(fp)
-
-    if has_folders and len(folder_groups) > 1:
-        # Multiple source folders — load each as an AiM folder then stitch together
-        raws = []
-        for folder_name in sorted(folder_groups.keys()):
-            paths = folder_groups[folder_name]
-            if _is_aim_group(paths):
-                raw = _load_group_as_aim(paths, folder_name)
-            else:
-                raw = load_aim_csv(str(paths[0]))
-            raws.append(raw)
-        log.info("Multi-folder ingest: %d folders → session %d", len(raws), session_id)
-        stitched = _stitch_raw_sessions(raws)
-        return _ingest_raw(session_id, stitched, db)
-
-    # Single folder or no folder info
-    all_paths = file_paths
-    if _is_aim_group(all_paths):
-        folder_label = (sorted(folder_groups.keys())[0] if folder_groups else "") or "upload"
-        raw = _load_group_as_aim(all_paths, folder_label)
+            shutil.rmtree(tmp, ignore_errors=True)
         return _ingest_raw(session_id, raw, db)
 
-    # Plain CSV files — stitch in order
+    # Standard multi-file stitch
     raws = []
-    for fp in all_paths:
-        if not Path(fp).exists():
+    combined_warnings: list = []
+    for fp in file_paths:
+        path = Path(fp)
+        if not path.exists():
             raise FileNotFoundError(f"CSV not found: {fp}")
-        raws.append(load_aim_csv(str(fp)))
+        raw = load_aim_csv(str(path))
+        raws.append(raw)
+        combined_warnings.extend(raw.warnings)
+
     if not raws:
         raise ValueError("No files to ingest")
+
     stitched = _stitch_raw_sessions(raws)
+    stitched.warnings = combined_warnings
     if len(raws) > 1:
-        log.info("Stitched %d files → session %d", len(raws), session_id)
+        log.info("Stitched %d files for session %d: %s", len(raws), session_id, stitched.filename)
+
     return _ingest_raw(session_id, stitched, db)
+
+
+def _rebuild_track_map_multi(track_id: int, session_id: int, db: sqlite3.Connection) -> None:
+    """Reconstruct track map using all valid GPS laps for better accuracy."""
+    try:
+        from backend.analysis.gps_reconstruction import reconstruct_track
+        gps_rows = db.execute(
+            "SELECT t.lat_json, t.lon_json FROM lap_telemetry t "
+            "JOIN laps l ON l.id=t.lap_id "
+            "WHERE l.session_id=? AND t.lat_json IS NOT NULL AND l.is_valid=1 "
+            "ORDER BY l.lap_time_s ASC",
+            (session_id,),
+        ).fetchall()
+        if not gps_rows:
+            return
+        all_lat, all_lon = [], []
+        for row in gps_rows:
+            lat_arr = json.loads(row["lat_json"])
+            lon_arr = json.loads(row["lon_json"])
+            all_lat.extend(lat_arr)
+            all_lon.extend(lon_arr)
+        if len(all_lat) < 20:
+            return
+        track_map = reconstruct_track(np.array(all_lat), np.array(all_lon))
+        db.execute(
+            "UPDATE tracks SET local_xy=?, lat_center=?, lon_center=?, length_m=? WHERE id=?",
+            (json.dumps(track_map.local_xy),
+             track_map.lat_center, track_map.lon_center,
+             track_map.length_m, track_id),
+        )
+    except Exception as e:
+        log.warning("Multi-lap track reconstruction failed: %s", e)
 
 
 def _rebuild_track_map(track_id: int, lap_id: int, db: sqlite3.Connection) -> None:
@@ -304,40 +313,6 @@ def _rebuild_track_map(track_id: int, lap_id: int, db: sqlite3.Connection) -> No
         )
     except Exception as e:
         log.warning("Track reconstruction failed: %s", e)
-
-
-def _rebuild_track_map_multi(track_id: int, session_id: int, db: sqlite3.Connection) -> None:
-    """Build a GPS track map averaged across all valid GPS laps in a session."""
-    try:
-        from backend.analysis.gps_reconstruction import reconstruct_track_multi_lap
-        rows = db.execute(
-            "SELECT t.lat_json, t.lon_json, l.lap_time_s FROM lap_telemetry t "
-            "JOIN laps l ON l.id=t.lap_id "
-            "WHERE l.session_id=? AND l.is_valid=1 AND t.lat_json IS NOT NULL "
-            "ORDER BY l.lap_time_s ASC",
-            (session_id,),
-        ).fetchall()
-        if not rows:
-            return
-        # Use up to 5 best laps for averaging (best laps = cleanest GPS lines)
-        lap_gps = []
-        for row in rows[:5]:
-            lat = np.array(json.loads(row["lat_json"]))
-            lon = np.array(json.loads(row["lon_json"]))
-            if len(lat) >= 20:
-                lap_gps.append((lat, lon))
-        if not lap_gps:
-            return
-        track_map = reconstruct_track_multi_lap(lap_gps)
-        db.execute(
-            "UPDATE tracks SET local_xy=?, lat_center=?, lon_center=?, length_m=? WHERE id=?",
-            (json.dumps(track_map.local_xy),
-             track_map.lat_center, track_map.lon_center,
-             track_map.length_m, track_id),
-        )
-        log.info("Track map built from %d laps (session %d)", len(lap_gps), session_id)
-    except Exception as e:
-        log.warning("Multi-lap track reconstruction failed: %s", e)
 
 
 def _update_benchmarks(session_id: int, driver_id: int, kart_id: int, track_id: int,

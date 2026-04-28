@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from backend.database import get_db
 from backend.routers.auth import get_current_user
 from backend.schemas import LapOut, LapTelemetryOut, CornerOut, SectorOut, CompareRequest, CompareOut, DeltaPoint
+from backend.routers.auth import require_engineer
 
 router = APIRouter(tags=["laps"])
 
@@ -178,6 +179,20 @@ def get_features(lap_id: int, db: sqlite3.Connection = Depends(get_db), _=Depend
     if not row:
         raise HTTPException(404, "Features not computed yet")
     return dict(row)
+
+
+@router.patch("/{lap_id}/notes")
+def update_lap_notes(lap_id: int, payload: dict, db: sqlite3.Connection = Depends(get_db), _=Depends(get_current_user)):
+    _get_lap_or_404(lap_id, db)
+    db.execute("UPDATE laps SET notes=? WHERE id=?", (payload.get("notes", ""), lap_id))
+    return {"ok": True}
+
+
+@router.patch("/{lap_id}/valid")
+def set_lap_valid(lap_id: int, payload: dict, db: sqlite3.Connection = Depends(get_db), _=Depends(require_engineer)):
+    _get_lap_or_404(lap_id, db)
+    db.execute("UPDATE laps SET is_valid=? WHERE id=?", (1 if payload.get("is_valid") else 0, lap_id))
+    return {"ok": True}
 
 
 @router.post("/compare", response_model=CompareOut)

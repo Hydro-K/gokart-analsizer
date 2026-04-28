@@ -213,6 +213,47 @@ CREATE TABLE IF NOT EXISTS storage_archive (
     archived_at TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
+-- ── Weather logs ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS weather_logs (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    temp_f          REAL,
+    humidity_pct    REAL,
+    track_condition TEXT    DEFAULT 'dry',
+    notes           TEXT    DEFAULT '',
+    created_at      TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- ── Maintenance logs ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS maintenance_logs (
+    id           INTEGER PRIMARY KEY,
+    kart_id      INTEGER NOT NULL REFERENCES karts(id) ON DELETE CASCADE,
+    type         TEXT    NOT NULL,
+    description  TEXT    DEFAULT '',
+    date         TEXT    NOT NULL,
+    laps_at_service INTEGER DEFAULT 0,
+    next_due_laps   INTEGER,
+    created_at   TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_kart ON maintenance_logs(kart_id);
+
+-- ── Checklists ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS checklist_templates (
+    id         INTEGER PRIMARY KEY,
+    kart_id    INTEGER REFERENCES karts(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    items_json TEXT    DEFAULT '[]',
+    created_at TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE TABLE IF NOT EXISTS checklist_runs (
+    id             INTEGER PRIMARY KEY,
+    template_id    INTEGER NOT NULL REFERENCES checklist_templates(id) ON DELETE CASCADE,
+    session_id     INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    checked_json   TEXT    DEFAULT '[]',
+    completed_at   TEXT,
+    created_at     TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
 -- ── Competition rules (single row) ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS competition_rules (
     id                       INTEGER PRIMARY KEY DEFAULT 1,
@@ -227,31 +268,7 @@ CREATE TABLE IF NOT EXISTS competition_rules (
     updated_at               TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 INSERT OR IGNORE INTO competition_rules (id) VALUES (1);
-
--- ── Tire pressure logs (multiple timestamped readings per session) ────────────
-CREATE TABLE IF NOT EXISTS tire_pressure_logs (
-    id          INTEGER PRIMARY KEY,
-    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    recorded_at TEXT    NOT NULL,  -- user-entered time e.g. "14:30" or "14:30 - post sprint"
-    fl_psi      REAL,
-    fr_psi      REAL,
-    rl_psi      REAL,
-    rr_psi      REAL,
-    fl_temp_f   REAL,
-    fr_temp_f   REAL,
-    rl_temp_f   REAL,
-    rr_temp_f   REAL,
-    notes       TEXT DEFAULT '',
-    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-CREATE INDEX IF NOT EXISTS idx_tplog_session ON tire_pressure_logs(session_id);
 """
-
-# ── Migrations run once against existing DBs ──────────────────────────────────
-_MIGRATIONS = [
-    "ALTER TABLE drivers ADD COLUMN settings_json TEXT DEFAULT '{}'",
-    "ALTER TABLE competition_rules ADD COLUMN timezone TEXT DEFAULT 'America/New_York'",
-]
 
 
 def get_db_path() -> Path:
@@ -281,11 +298,12 @@ def init_db() -> None:
         ("vertical_acc_json", "TEXT"),
         ("battery_v_json",    "TEXT"),
     ])
-    _add_columns_if_missing(conn, "drivers", [
-        ("settings_json", "TEXT DEFAULT '{}'"),
+    _add_columns_if_missing(conn, "laps", [
+        ("recorded_at", "TEXT"),
+        ("notes",       "TEXT DEFAULT ''"),
     ])
-    _add_columns_if_missing(conn, "competition_rules", [
-        ("timezone", "TEXT DEFAULT 'America/New_York'"),
+    _add_columns_if_missing(conn, "sessions", [
+        ("start_voltage_v", "REAL"),
     ])
     conn.commit()
     conn.close()

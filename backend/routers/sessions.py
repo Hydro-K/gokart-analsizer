@@ -361,3 +361,100 @@ def delete_tire_log(
         (log_id, session_id),
     )
     return {"ok": True}
+
+
+# ── Weather log ───────────────────────────────────────────────────────────────
+
+@router.get("/{session_id}/weather")
+def get_weather(session_id: int, db: sqlite3.Connection = Depends(get_db), _=Depends(get_current_user)):
+    row = db.execute("SELECT * FROM weather_logs WHERE session_id=?", (session_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+@router.post("/{session_id}/weather")
+def upsert_weather(session_id: int, payload: dict,
+                   db: sqlite3.Connection = Depends(get_db), _=Depends(get_current_user)):
+    if not db.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone():
+        raise HTTPException(404, "Session not found")
+    existing = db.execute("SELECT id FROM weather_logs WHERE session_id=?", (session_id,)).fetchone()
+    fields = {k: payload.get(k) for k in ("temp_f", "humidity_pct", "track_condition", "notes")}
+    if existing:
+        sets = ", ".join(f"{k}=?" for k in fields)
+        db.execute(f"UPDATE weather_logs SET {sets} WHERE session_id=?", (*fields.values(), session_id))
+    else:
+        cols = ", ".join(fields.keys())
+        ph = ", ".join("?" for _ in fields)
+        db.execute(f"INSERT INTO weather_logs(session_id, {cols}) VALUES(?,{ph})", (session_id, *fields.values()))
+    return dict(db.execute("SELECT * FROM weather_logs WHERE session_id=?", (session_id,)).fetchone())
+
+
+# ── Quick (manual) lap entry ──────────────────────────────────────────────────
+
+@router.post("/{session_id}/manual-laps", status_code=201)
+def add_manual_laps(session_id: int, payload: dict,
+                    db: sqlite3.Connection = Depends(get_db), _=Depends(require_engineer)):
+    sess = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    lap_times: list = payload.get("lap_times_s", [])
+    if not lap_times:
+        raise HTTPException(400, "lap_times_s must be a non-empty list")
+    # Determine next lap number
+    max_lap = db.execute("SELECT COALESCE(MAX(lap_number),0) FROM laps WHERE session_id=?", (session_id,)).fetchone()[0]
+    inserted = []
+    for i, lt in enumerate(lap_times):
+        cur = db.execute(
+            "INSERT INTO laps(session_id, driver_id, kart_id, track_id, lap_number, lap_time_s, is_valid) VALUES(?,?,?,?,?,?,?)",
+            (session_id, sess["driver_id"], sess["kart_id"], sess["track_id"],
+             max_lap + i + 1, float(lt), 1),
+        )
+        inserted.append(cur.lastrowid)
+    return {"inserted": len(inserted), "lap_ids": inserted}
+
+
+@router.get("/multi-compare")
+def multi_session_compare(
+    track_id: int,
+    driver_id: Optional[int] = None,
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Best lap per session for a track, optionally filtered by driver."""
+    q = """SELECT s.id, s.date, s.session_type, s.driver_id,
+                  d.name as driver_name, k.name as kart_name,
+                  MIN(l.lap_time_s) as best_lap_s,
+                  COUNT(l.id) as lap_count
+           FROM sessions s
+           JOIN drivers d ON d.id=s.driver_id
+           JOIN karts   k ON k.id=s.kart_id
+           JOIN laps    l ON l.session_id=s.id AND l.is_valid=1
+           WHERE s.track_id=?"""
+    params: list = [track_id]
+    if driver_id:
+        q += " AND s.driver_id=?"; params.append(driver_id)
+    q += " GROUP BY s.id ORDER BY s.date ASC, s.created_at ASC"
+    rows = db.execute(q, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/quick", status_code=201)
+def quick_session(payload: dict, db: sqlite3.Connection = Depends(get_db), _=Depends(require_engineer)):
+    """Create a session + manual laps in one call. No CSV needed."""
+    for field in ("driver_id", "kart_id", "track_id", "lap_times_s"):
+        if field not in payload:
+            raise HTTPException(400, f"Missing field: {field}")
+    import datetime as _dt
+    date = payload.get("date") or _dt.date.today().isoformat()
+    session_type = payload.get("session_type", "Practice 1")
+    notes = payload.get("notes", "")
+    cur = db.execute(
+        "INSERT INTO sessions(driver_id, kart_id, track_id, date, session_type, notes) VALUES(?,?,?,?,?,?)",
+        (payload["driver_id"], payload["kart_id"], payload["track_id"], date, session_type, notes),
+    )
+    session_id = cur.lastrowid
+    for i, lt in enumerate(payload["lap_times_s"]):
+        db.execute(
+            "INSERT INTO laps(session_id, driver_id, kart_id, track_id, lap_number, lap_time_s, is_valid) VALUES(?,?,?,?,?,?,?)",
+            (session_id, payload["driver_id"], payload["kart_id"], payload["track_id"], i + 1, float(lt), 1),
+        )
+    return {"session_id": session_id, "laps": len(payload["lap_times_s"])}

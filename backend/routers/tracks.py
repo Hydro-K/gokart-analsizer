@@ -79,22 +79,38 @@ def get_map(track_id: int, db: sqlite3.Connection = Depends(get_db), _=Depends(g
 
 
 @router.post("/{track_id}/reconstruct")
-def reconstruct_map(track_id: int, background_tasks: BackgroundTasks,
+def reconstruct_map(track_id: int,
                     db: sqlite3.Connection = Depends(get_db), _=Depends(require_engineer)):
+    import numpy as np
+    from backend.analysis.gps_reconstruction import reconstruct_track
+
     row = db.execute("SELECT id FROM tracks WHERE id=?", (track_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Track not found")
-    # Find best GPS lap for this track (most GPS points = highest quality)
-    lap_row = db.execute(
-        "SELECT l.id FROM laps l JOIN lap_telemetry t ON t.lap_id=l.id "
+
+    gps_rows = db.execute(
+        "SELECT t.lat_json, t.lon_json FROM lap_telemetry t "
+        "JOIN laps l ON l.id=t.lap_id "
         "WHERE l.track_id=? AND t.lat_json IS NOT NULL AND l.is_valid=1 "
-        "ORDER BY l.lap_time_s ASC LIMIT 1",
+        "ORDER BY l.lap_time_s ASC",
         (track_id,),
-    ).fetchone()
-    if not lap_row:
+    ).fetchall()
+    if not gps_rows:
         raise HTTPException(400, "No GPS laps available for this track")
-    cur = db.execute(
-        "INSERT INTO jobs(type, priority, payload_json) VALUES(?,?,?)",
-        ("reconstruct_track", 3, json.dumps({"track_id": track_id, "lap_id": lap_row["id"]})),
+
+    all_lat, all_lon = [], []
+    for r in gps_rows:
+        all_lat.extend(json.loads(r["lat_json"]))
+        all_lon.extend(json.loads(r["lon_json"]))
+
+    try:
+        track_map = reconstruct_track(np.array(all_lat), np.array(all_lon))
+    except Exception as exc:
+        raise HTTPException(400, f"Reconstruction failed: {exc}")
+
+    db.execute(
+        "UPDATE tracks SET local_xy=?, lat_center=?, lon_center=?, length_m=? WHERE id=?",
+        (json.dumps(track_map.local_xy), track_map.lat_center, track_map.lon_center,
+         track_map.length_m, track_id),
     )
-    return {"job_id": cur.lastrowid, "message": "Track reconstruction queued"}
+    return {"message": "Track map rebuilt", "length_m": track_map.length_m, "points": len(track_map.local_xy)}

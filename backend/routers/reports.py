@@ -291,11 +291,28 @@ def day_report(
         ).fetchall()
         energy_rows = []
         for lap in laps:
-            er = db.execute(
-                "SELECT total_kwh, net_kwh, avg_power_kw, peak_power_kw FROM lap_telemetry WHERE lap_id=?",
-                (lap["id"],),
-            ).fetchone()
-            energy_rows.append(dict(er) if er else {})
+            try:
+                from backend.analysis.deep_analysis import estimate_energy
+                tel = db.execute(
+                    "SELECT time_json, speed_json FROM lap_telemetry WHERE lap_id=?",
+                    (lap["id"],),
+                ).fetchone()
+                if tel and tel["time_json"] and tel["speed_json"]:
+                    import json as _json
+                    import numpy as _np
+                    t = _np.array(_json.loads(tel["time_json"]))
+                    s = _np.array(_json.loads(tel["speed_json"]))
+                    e = estimate_energy(t, s)
+                    energy_rows.append({
+                        "total_kwh": e.net_kwh,
+                        "net_kwh": e.net_kwh,
+                        "avg_power_kw": e.avg_power_kw,
+                        "peak_power_kw": e.peak_power_kw,
+                    })
+                else:
+                    energy_rows.append({})
+            except Exception:
+                energy_rows.append({})
         sessions_data.append({
             "session": dict(sess),
             "laps": [dict(l) for l in laps],

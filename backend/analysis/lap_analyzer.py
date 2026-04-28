@@ -49,6 +49,7 @@ class LapData:
     lon: np.ndarray = field(default_factory=lambda: np.array([]))
     corners: List[CornerData] = field(default_factory=list)
     phase: np.ndarray = field(default_factory=lambda: np.array([]))  # per-sample phase label
+    abs_start_s: float = 0.0   # seconds from session start (t=0) to lap start crossing
 
     @property
     def lap_time_str(self) -> str:
@@ -130,15 +131,15 @@ def _detect_laps_beacon(time: np.ndarray, beacon: np.ndarray) -> List[tuple]:
 
     median_lap_t = float(np.median([time[e] - time[s] for s, e in laps]))
 
-    # Prepend the first lap if [0 → first_edge] is ≥ 60% of a typical lap
+    # Prepend the first lap if [0 → first_edge] is ≥ 85% of a typical lap
+    # (below 85% it's an out-lap / warmup fragment, not a full timed lap)
     first_seg_t = float(time[edges[0]] - time[0])
-    if first_seg_t >= median_lap_t * 0.6:
+    if first_seg_t >= median_lap_t * 0.85:
         laps.insert(0, (0, int(edges[0]) - 1))
 
-    # Append the final lap if [last_edge → end] is ≥ 60% of a typical lap
-    # (handles loggers that fire a beacon at the START of each lap instead)
+    # Append the final lap if [last_edge → end] is ≥ 85% of a typical lap
     last_seg_t = float(time[-1] - time[edges[-1]])
-    if last_seg_t >= median_lap_t * 0.6:
+    if last_seg_t >= median_lap_t * 0.85:
         laps.append((int(edges[-1]), len(time) - 1))
 
     return laps
@@ -232,6 +233,7 @@ def analyse_session(
             lat=la_lap,
             lon=lo_lap,
             phase=phase,
+            abs_start_s=float(t_lap[0]),
         )
         from backend.analysis.corner_detector import detect_corners
         ld.corners = detect_corners(ld.time, ld.speed)
@@ -242,14 +244,14 @@ def analyse_session(
     # Uses IQR on the lower end so partial out-laps (e.g. 24s when typical is 37s)
     # are excluded, keeping genuinely slow laps (spins, traffic) on the upper end.
     laps: List[LapData] = raw_laps
-    if len(raw_laps) >= 4:
+    if len(raw_laps) >= 2:
         lap_times_arr = np.array([l.lap_time for l in raw_laps])
         median_t = float(np.median(lap_times_arr))
         q1 = float(np.percentile(lap_times_arr, 25))
         q3 = float(np.percentile(lap_times_arr, 75))
         iqr = q3 - q1 if q3 > q1 else median_t * 0.2
-        # Lower fence: IQR method but never below 40% of median
-        lo_cut = max(median_t * 0.40, q1 - 1.5 * iqr)
+        # Lower fence: IQR method but never below 70% of median — anything shorter is a partial lap
+        lo_cut = max(median_t * 0.70, q1 - 1.5 * iqr)
         # Upper fence: generous — 8× median removes multi-hour out-lap sessions
         hi_cut = median_t * 8.0
         filtered = [l for l in raw_laps if lo_cut <= l.lap_time <= hi_cut]

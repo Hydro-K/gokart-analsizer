@@ -21,7 +21,7 @@ class TrackMap:
     length_m: float
 
 
-def reconstruct_track(lat: np.ndarray, lon: np.ndarray, smooth_sigma: float = 25.0) -> TrackMap:
+def reconstruct_track(lat: np.ndarray, lon: np.ndarray, smooth_sigma: float = 5.0) -> TrackMap:
     """
     Reconstruct a track map from GPS lat/lon arrays.
 

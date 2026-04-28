@@ -29,11 +29,15 @@ export default function Tracks() {
     } catch (err: any) { setError(err.message) }
   }
 
-  const reconstruct = async (id: number) => {
+  const [rebuilding, setRebuilding] = useState<number | null>(null)
+  const reconstruct = async (t: Track) => {
+    setRebuilding(t.id)
     try {
-      await api.post(`/tracks/${id}/reconstruct`, {})
-      alert('Reconstruction job queued. GPS data from next upload will populate the track map.')
+      await api.post(`/tracks/${t.id}/reconstruct`, {})
+      await selectTrack(t)
+      load()
     } catch (err: any) { alert(err.message) }
+    finally { setRebuilding(null) }
   }
 
   const del = async (id: number) => {
@@ -67,11 +71,12 @@ export default function Tracks() {
                 }`}>
                 <div className="flex-1 min-w-0">
                   <div className="text-white font-medium">{t.name}</div>
-                  {t.length_m && <div className="text-xs text-gray-400">{(t.length_m / 1000).toFixed(3)} km</div>}
+                  {t.length_m && <div className="text-xs text-gray-400">{(t.length_m * 0.000621371).toFixed(3)} mi</div>}
                 </div>
-                <button onClick={e => { e.stopPropagation(); reconstruct(t.id) }}
-                  className="text-xs text-gray-500 hover:text-accent transition-colors px-2">
-                  Rebuild
+                <button onClick={e => { e.stopPropagation(); reconstruct(t) }}
+                  disabled={rebuilding === t.id}
+                  className="text-xs text-gray-500 hover:text-accent transition-colors px-2 disabled:opacity-40">
+                  {rebuilding === t.id ? '...' : 'Rebuild Map'}
                 </button>
                 <button onClick={e => { e.stopPropagation(); del(t.id) }}
                   className="text-xs text-gray-500 hover:text-red transition-colors">

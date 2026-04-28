@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { api } from '../api'
+import { mphKmh, lbs } from '../utils/units'
 
 interface ComplianceItem {
   rule_name: string
@@ -54,9 +55,9 @@ export default function Compliance() {
           <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Active Rules — {rules.rulebook_version}</h2>
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div><span className="text-gray-400">Max Current:</span> <span className="text-orange font-bold">{rules.controller_max_current_a}A</span></div>
-            <div><span className="text-gray-400">Speed Limit:</span> <span className="text-white">{rules.speed_limit_kmh} km/h</span></div>
+            <div><span className="text-gray-400">Speed Limit:</span> <span className="text-white">{mphKmh(rules.speed_limit_kmh).toFixed(1)} mph</span></div>
             <div><span className="text-gray-400">Battery Max V:</span> <span className="text-white">{rules.battery_voltage_max_v}V</span></div>
-            <div><span className="text-gray-400">Min Weight:</span> <span className="text-white">{rules.combined_min_weight_kg} kg</span></div>
+            <div><span className="text-gray-400">Min Weight:</span> <span className="text-white">{lbs(rules.combined_min_weight_kg).toFixed(0)} lbs</span></div>
           </div>
         </div>
       )}

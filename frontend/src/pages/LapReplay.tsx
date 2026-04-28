@@ -25,12 +25,13 @@ function speedToColor(speedMs: number, maxMs: number): string {
   return `rgb(${r},${g},50)`
 }
 
-function fmtRecorded(created_at?: string) {
-  if (!created_at) return ''
+function fmtRecorded(lap?: { recorded_at?: string; created_at?: string }) {
+  const ts = lap?.recorded_at || lap?.created_at
+  if (!ts) return ''
   try {
-    return new Date(created_at).toLocaleString('en-US', {
+    return new Date(ts).toLocaleString('en-US', {
       month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
     })
   } catch { return '' }
 }
@@ -57,6 +58,14 @@ export default function LapReplay() {
   const [error, setError]     = useState('')
   const [lapInfo, setLapInfo] = useState<Lap | null>(null)
   const [mapStyle, setMapStyle] = useState<'satellite' | 'street'>('satellite')
+  const [targetInput, setTargetInput] = useState('')   // "M:SS.mmm"
+  const [targetSec, setTargetSec]     = useState<number | null>(null)
+
+  const parseTarget = (s: string): number | null => {
+    const m = s.match(/^(\d+):(\d{2})\.(\d{1,3})$/)
+    if (!m) return null
+    return parseInt(m[1]) * 60 + parseInt(m[2]) + parseInt(m[3].padEnd(3, '0')) / 1000
+  }
 
   // Load lap + fetch sibling laps from same session
   useEffect(() => {
@@ -239,8 +248,8 @@ export default function LapReplay() {
             Lap Replay{lapInfo ? ` — Lap ${lapInfo.lap_number}` : ''}
             {lapInfo && <span className="text-gray-400 font-normal ml-2">{fmtLap(lapInfo.lap_time_s)}</span>}
           </h1>
-          {lapInfo?.created_at && (
-            <span className="text-xs text-gray-500 shrink-0">{fmtRecorded(lapInfo.created_at)}</span>
+          {(lapInfo?.recorded_at || lapInfo?.created_at) && (
+            <span className="text-xs text-gray-500 shrink-0">{fmtRecorded(lapInfo)}</span>
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -329,6 +338,15 @@ export default function LapReplay() {
               <div className="text-xs text-gray-400">LAP TIME</div>
               <div className="text-2xl font-mono font-bold text-white">{fmtLap(lapTime)}</div>
               {lapInfo && <div className="text-xs text-gray-500 mt-0.5">/ {fmtLap(lapInfo.lap_time_s)}</div>}
+              {targetSec != null && (() => {
+                const d = lapTime - targetSec * (lapTime / (lapInfo?.lap_time_s ?? 1))
+                const ahead = d < 0
+                return (
+                  <div className={`text-sm font-mono font-bold mt-1 ${ahead ? 'text-green-400' : 'text-red'}`}>
+                    {ahead ? '' : '+'}{d.toFixed(3)}s vs target
+                  </div>
+                )
+              })()}
             </div>
 
             <div className="space-y-2">
@@ -356,6 +374,21 @@ export default function LapReplay() {
               ))}
             </div>
 
+            {/* Target time */}
+            <div className="border-t border-border pt-2">
+              <div className="text-xs text-gray-400 mb-1">TARGET TIME</div>
+              <div className="flex gap-1">
+                <input value={targetInput} onChange={e => setTargetInput(e.target.value)}
+                  placeholder="M:SS.mmm"
+                  className="flex-1 bg-bg border border-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-accent font-mono" />
+                <button onClick={() => { const t = parseTarget(targetInput); setTargetSec(t) }}
+                  className="px-2 py-1 text-xs rounded bg-accent text-bg font-bold hover:opacity-90">Set</button>
+              </div>
+              {targetSec != null && (
+                <div className="text-xs text-gray-400 mt-1">Target: {fmtLap(targetSec)}</div>
+              )}
+            </div>
+
             {/* Playback speed */}
             <div className="border-t border-border pt-2">
               <div className="text-xs text-gray-400 mb-1">PLAYBACK SPEED</div>
@@ -381,8 +414,8 @@ export default function LapReplay() {
                       className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${l.id === activeLapId ? 'bg-accent bg-opacity-20 text-accent border border-accent border-opacity-50' : 'text-gray-400 hover:text-white hover:bg-bg'}`}
                     >
                       <div className="font-mono">Lap {l.lap_number} — {fmtLap(l.lap_time_s)}</div>
-                      {l.created_at && (
-                        <div className="text-gray-600 text-[10px]">{fmtRecorded(l.created_at)}</div>
+                      {(l.recorded_at || l.created_at) && (
+                        <div className="text-gray-600 text-[10px]">{fmtRecorded(l)}</div>
                       )}
                     </button>
                   ))}

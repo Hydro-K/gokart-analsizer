@@ -98,6 +98,7 @@ class RawSessionData:
     driver_name: str = "Driver"
     sample_rate: float = 10.0       # Hz
     warnings:    List[str] = field(default_factory=list)
+    session_start_dt: Optional[object] = None   # datetime of session start parsed from CSV header
     # Extended AiM channels (None if not present)
     lateral_acc:  Optional[np.ndarray] = None   # G
     inline_acc:   Optional[np.ndarray] = None   # G  (longitudinal)
@@ -131,6 +132,58 @@ def _is_unit_row(row: pd.Series) -> bool:
     if not values:
         return True   # all empty → treat as blank / unit-like
     return all(_UNIT_RE.match(v) for v in values)
+
+
+def _parse_session_start(filepath: str):
+    """Extract session start datetime from AiM CSV metadata header lines.
+
+    AiM Race Studio 3 exports begin with key-value lines like:
+        Date, 13/04/2026
+        Time, 09:32:11.450
+    Returns a datetime object or None if not found / unparseable.
+    """
+    import datetime as _dt
+    date_str = None
+    time_str = None
+    try:
+        with open(filepath, "r", errors="replace", newline="") as fh:
+            for _ in range(60):
+                line = fh.readline()
+                if not line:
+                    break
+                parts = line.strip().split(",", 1)
+                if len(parts) < 2:
+                    continue
+                key = _norm(parts[0])
+                val = parts[1].strip().strip('"').strip()
+                if key == "date" and val:
+                    date_str = val
+                elif key == "time" and val:
+                    # Only take the first "time" line (session start time, not the data column)
+                    if time_str is None:
+                        time_str = val
+    except OSError:
+        return None
+
+    if not date_str:
+        return None
+
+    for date_fmt in ("%d/%m/%Y", "%Y/%m/%d", "%m/%d/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            d = _dt.datetime.strptime(date_str, date_fmt)
+            if time_str:
+                t_clean = time_str.split(".")[0]  # strip fractional seconds
+                for time_fmt in ("%H:%M:%S", "%H:%M"):
+                    try:
+                        t = _dt.datetime.strptime(t_clean, time_fmt)
+                        d = d.replace(hour=t.hour, minute=t.minute, second=t.second)
+                        break
+                    except ValueError:
+                        continue
+            return d
+        except ValueError:
+            continue
+    return None
 
 
 def _find_header_row(filepath: str) -> int:
@@ -324,6 +377,8 @@ def load_aim_csv(filepath: str) -> RawSessionData:
     if sample_rate < 1 or sample_rate > 500:
         warnings.append(f"Unusual sample rate detected: {sample_rate} Hz.")
 
+    session_start_dt = _parse_session_start(filepath)
+
     return RawSessionData(
         time=time_raw,
         speed=speed_ms,
@@ -335,6 +390,7 @@ def load_aim_csv(filepath: str) -> RawSessionData:
         filename=Path(filepath).name,
         sample_rate=sample_rate,
         warnings=warnings,
+        session_start_dt=session_start_dt,
     )
 
 

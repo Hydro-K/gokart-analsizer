@@ -24,6 +24,7 @@ import ML from './pages/ML'
 import Compare from './pages/Compare'
 import PiGuide from './pages/PiGuide'
 import LapReplay from './pages/LapReplay'
+import Reports from './pages/Reports'
 import { api, SystemStatus } from './api'
 
 function AppRouter() {
@@ -72,6 +73,7 @@ function AppRouter() {
         <Route path="/pi-guide"      element={<PiGuide />} />
         <Route path="/storage"       element={<StorageDashboard />} />
         <Route path="/users"         element={<Users />} />
+        <Route path="/reports"       element={<Reports />} />
         <Route path="/settings"      element={<Settings />} />
         <Route path="*"              element={<Navigate to="/" replace />} />
       </Route>
